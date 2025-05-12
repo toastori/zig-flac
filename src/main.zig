@@ -164,7 +164,7 @@ fn writeFrame(
     out: std.io.AnyWriter,
     streaminfo: metadata.StreamInfo,
     first_sample_idx: usize,
-    blk_size: usize,
+    blk_size: u32,
 ) !void {
     var fwriter = @import("FrameWriter.zig").init(out);
 

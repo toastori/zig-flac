@@ -44,7 +44,7 @@ pub fn writeBits(self: *@This(), size: u8, value: u64, comptime calc_crc: CalcCr
 
 // Write bytes to the file
 pub fn writeInt(self: *@This(), comptime T: type, value: T, comptime calc_crc: CalcCrc) !void {
-    if (builtin.mode == .Debug and self.buffer_len != 0) unreachable;
+    std.debug.assert(self.buffer_len == 0);
     switch (@typeInfo(T)) {
         .int => |t| if (t.bits % 8 != 0) @compileError("CrcWriter.writeInt: Int type must have bits power of 8."),
         else => @compileError("CrcWriter.writeInt: Unsupported type \"" ++ @typeName(T) ++ "\""),
@@ -80,7 +80,7 @@ pub inline fn writeCrc16(self: *@This()) !void {
 pub fn writeHeader(
     self: *@This(),
     is_fixed_size: bool,
-    block_size: usize,
+    block_size: u32,
     sample_rate: u24, // 0 if `Streaminfo.sample_rate` is consistant across the file
     channels: Channels,
     bit_depth: u8, // 0 if `Streaminfo.bit_depth` is consistant across the file
@@ -141,7 +141,7 @@ pub fn writeHeader(
         .both,
     );
     // Write channels
-    if (builtin.mode == .Debug and @as(u8, @intFromEnum(channels)) > 10) unreachable; // assert channels <= 10
+    std.debug.assert(@as(u8, @intFromEnum(channels)) <= 10);
     try self.writeBits(4, @intFromEnum(channels), .both);
     // Write bit depth
     try self.writeBits(
@@ -162,7 +162,7 @@ pub fn writeHeader(
     if (frame_sample_number <= 0x7F) {
         try self.writeInt(u8, @truncate(frame_sample_number), .both);
     } else {
-        if (builtin.mode == .Debug and frame_sample_number > 0x000f_ffff_ffff) unreachable;
+        std.debug.assert(frame_sample_number <= 0x000f_ffff_ffff);
         var buffer: u64 = 0;
         var i: u6 = 0;
         var first_byte_max: usize = 0b11111;
@@ -177,7 +177,7 @@ pub fn writeHeader(
         try self.writeBits(8 * (i + 1), buffer, .both);
     }
     // Write uncommon block size
-    if (builtin.mode == .Debug and uncommon_block_size == .half and block_size == 65536) unreachable;
+    std.debug.assert(!(uncommon_block_size == .half and block_size >= 65536));
     switch (uncommon_block_size) {
         .none => {},
         else => try self.writeBits(@intFromEnum(uncommon_block_size) * 8, block_size - 1, .both),
@@ -202,12 +202,6 @@ pub fn writeVerbatimSubframe(self: *@This(), samples: [][4]u8, bit_depth: u8) !v
 fn calcCrc(self: *@This(), calc_crc: CalcCrc, byte: u8) void {
     if (calc_crc == .both) self.crc8.update(&.{byte});
     if (calc_crc != .none) self.crc16.update(&.{byte});
-    // if (calc_crc == .both) self.crc8 ^= byte;
-    // if (calc_crc != .none) self.crc16 ^= @as(u16, @intCast(byte)) << 8;
-    // for (0..8) |_| {
-    //     // if (calc_crc == .both) self.crc8 = (self.crc8 << 1) ^ ((self.crc8 >> 7) * 0x07);
-    //     if (calc_crc != .none) self.crc16 = (self.crc16 << 1) ^ ((self.crc16 >> 15) * 0x8005);
-    // }
 }
 
 pub const CalcCrc = enum {

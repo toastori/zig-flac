@@ -18,7 +18,7 @@ pub const BlockHeader = packed struct(u8) {
 };
 
 pub const StreamInfo = struct {
-    md5: u128,
+    md5: [16]u8,
     interchannel_samples: u64, // real 36
     min_frame_size: u24 = 0,
     max_frame_size: u24 = 0,
@@ -48,7 +48,7 @@ pub const StreamInfo = struct {
         interchannel_samples_be[0] |= (self.bit_depth - 1) << 4;
         @memcpy(result[13..18], interchannel_samples_be[0..5]);
         // md5
-        @memcpy(result[18..], &@as([16]u8, @bitCast(nativeToBig(u128, self.md5))));
+        @memcpy(result[18..], &self.md5);
         return result;
     }
 };

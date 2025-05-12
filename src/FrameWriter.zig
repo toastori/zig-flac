@@ -7,8 +7,20 @@ writer: std.io.AnyWriter,
 buffer: u64 = 0,
 buffer_len: u8 = 0,
 
-crc16: u16 = 0,
-crc8: u8 = 0,
+crc16: std.hash.crc.Crc(u16, .{
+    .polynomial = 0x8005,
+    .initial = 0,
+    .reflect_input = false,
+    .reflect_output = false,
+    .xor_output = 0,
+}) = .init(),
+crc8: std.hash.crc.Crc(u8, .{
+    .polynomial = 0x07,
+    .initial = 0,
+    .reflect_input = false,
+    .reflect_output = false,
+    .xor_output = 0,
+}) = .init(),
 
 pub fn init(writer: std.io.AnyWriter) @This() {
     return .{
@@ -56,12 +68,12 @@ pub fn flushByte(self: *@This(), comptime calc_crc: CalcCrc) !void {
 
 // Write Crc8 in frame header
 pub inline fn writeCrc8(self: *@This()) !void {
-    try self.writeInt(u8, self.crc8, .only16);
+    try self.writeInt(u8, self.crc8.final(), .only16);
 }
 
 // Write Crc16 in frame footer
 pub inline fn writeCrc16(self: *@This()) !void {
-    try self.writeInt(u16, std.mem.nativeToBig(u16, self.crc16), .none);
+    try self.writeInt(u16, std.mem.nativeToBig(u16, self.crc16.final()), .none);
 }
 
 /// Write frame header
@@ -188,12 +200,14 @@ pub fn writeVerbatimSubframe(self: *@This(), samples: [][4]u8, bit_depth: u8) !v
 }
 
 fn calcCrc(self: *@This(), calc_crc: CalcCrc, byte: u8) void {
-    if (calc_crc == .both) self.crc8 ^= byte;
-    if (calc_crc != .none) self.crc16 ^= @as(u16, @intCast(byte)) << 8;
-    for (0..8) |_| {
-        if (calc_crc == .both) self.crc8 = (self.crc8 << 1) ^ ((self.crc8 >> 7) * 0x07);
-        if (calc_crc != .none) self.crc16 = (self.crc16 << 1) ^ ((self.crc16 >> 15) * 0x8005);
-    }
+    if (calc_crc == .both) self.crc8.update(&.{byte});
+    if (calc_crc != .none) self.crc16.update(&.{byte});
+    // if (calc_crc == .both) self.crc8 ^= byte;
+    // if (calc_crc != .none) self.crc16 ^= @as(u16, @intCast(byte)) << 8;
+    // for (0..8) |_| {
+    //     // if (calc_crc == .both) self.crc8 = (self.crc8 << 1) ^ ((self.crc8 >> 7) * 0x07);
+    //     if (calc_crc != .none) self.crc16 = (self.crc16 << 1) ^ ((self.crc16 >> 15) * 0x8005);
+    // }
 }
 
 pub const CalcCrc = enum {

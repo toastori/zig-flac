@@ -40,12 +40,12 @@ pub const StreamInfo = struct {
         @memcpy(result[7..10], &@as([3]u8, @bitCast(nativeToBig(u24, self.max_frame_size))));
         // sample rate, channels and first bit of bit depth
         var sample_rate_be: [3]u8 = @bitCast(nativeToBig(u24, self.sample_rate << 4));
-        sample_rate_be[2] |= (self.channels - 1) << 1;
+        sample_rate_be[2] |= self.channels - 1 << 1;
         sample_rate_be[2] |= (self.bit_depth - 1) >> 4;
         @memcpy(result[10..13], &sample_rate_be);
         // lower 4 bits of bit depth and interchannel samples
         var interchannel_samples_be: [8]u8 = @bitCast(nativeToBig(u64, self.interchannel_samples << 24));
-        interchannel_samples_be[0] |= (self.bit_depth - 1) << 4;
+        interchannel_samples_be[0] |= self.bit_depth - 1 << 4;
         @memcpy(result[13..18], interchannel_samples_be[0..5]);
         // md5
         @memcpy(result[18..], &self.md5);

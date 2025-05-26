@@ -8,12 +8,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .omit_frame_pointer = false,
     });
 
     const exe = b.addExecutable(.{
         .name = "flac",
         .root_module = exe_mod,
+        .link_libc = true,
     });
 
     b.installArtifact(exe);

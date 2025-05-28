@@ -1,8 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const tracy = @import("tracy");
 const metadata = @import("metadata.zig");
 const rice_code = @import("rice_code.zig");
+
 const SingleChannelIter = @import("sample_iter.zig").SingleChannelIter;
+const SampleIter = @import("sample_iter.zig").SampleIter;
 const RiceCode = rice_code.RiceCode;
 const RiceConfig = rice_code.RiceConfig;
 
@@ -13,20 +16,8 @@ writer: std.io.AnyWriter,
 buffer: u64 = 0,
 buffer_len: u6 = 0,
 
-crc16: std.hash.crc.Crc(u16, .{
-    .polynomial = 0x8005,
-    .initial = 0,
-    .reflect_input = false,
-    .reflect_output = false,
-    .xor_output = 0,
-}) = .init(),
-crc8: std.hash.crc.Crc(u8, .{
-    .polynomial = 0x07,
-    .initial = 0,
-    .reflect_input = false,
-    .reflect_output = false,
-    .xor_output = 0,
-}) = .init(),
+crc16: std.hash.crc.Crc16Umts = .init(),
+crc8: std.hash.crc.Crc8Smbus = .init(),
 
 // -- Initializer --
 
@@ -63,25 +54,10 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
     }
 }
 
-pub fn writeRiceQuo(self: *@This(), quotient: u32) !void {
-    var quo = quotient;
-    while (quo > 63) : (quo -= 64) {
-        @branchHint(.unlikely);
-        try self.writeBits(64, 0, .only16);
-    }
-    try self.writeBits(@intCast(quo + 1), 1, .only16);
-}
-
-pub fn writeRice(self: *@This(), rice: RiceCode, param: u6) !void {
-    // Write Quotient
-    var quo = rice.quo;
-    while (quo > 63) : (quo -= 64) {
-        @branchHint(.unlikely);
-        try self.writeBits(64, 0, .only16);
-    }
-    try self.writeBits(@intCast(quo + 1), 1, .only16);
-    // Write Remainder
-    try self.writeBits(param, rice.rem, .only16);
+/// Should be used instead of `writeBits()` when writing signed integers
+pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCrc) !void {
+    const bits = value & (@as(u64, std.math.maxInt(u64)) >> @intCast(64 - size));
+    return self.writeBits(size, bits, calc_crc);
 }
 
 /// Flush remaining bits and align it to a byte
@@ -214,7 +190,7 @@ pub fn writeHeader(
             first_byte_max >>= 1; // --endian, --sign, --channels, --bps, and --sample-rate
         }
         buffer |= ((@as(u56, 0b11111110) << (6 - i)) | number) << (8 * i); // first byte
-        try self.writeBits(8 * (i + 1), buffer & (@as(u64, 0xffffffffffffffff) >> @intCast(@as(u7, 64) - 8 * (i + 1))), .both);
+        try self.writeBitsWrapped(8 * (i + 1), buffer, .both);
     }
     // Write uncommon block size
     std.debug.assert(!(uncommon_block_size == .half and block_size >= 65536));
@@ -233,10 +209,12 @@ pub fn writeHeader(
     try self.writeCrc8();
 }
 
-/// Write subframe in Constant encoding
-pub fn writeConstantsubframe(self: *@This(), sample_size: u6, sample: usize) !void {
-    try self.writeBits(8, 0, .only16); // Constant coding
-    try self.writeBits(sample_size, sample, .only16);
+/// Write subframe in Constant encoding \
+/// Wasted Bits in Constant Subframe makes no sense at all (?
+pub fn writeConstantSubframe(self: *@This(), sample_size: u6, sample: i64) !void {
+    // subframe Header: syncBit[0](1) + Constant Coding[000000](6) + WastedBits[0](1)
+    try self.writeBits(8, 0, .only16);
+    try self.writeBitsWrapped(sample_size, @bitCast(sample), .only16);
 }
 
 /// Write subframe in Verbatim encoding
@@ -244,17 +222,14 @@ pub fn writeVerbatimSubframe(
     self: *@This(),
     SampleT: type,
     sample_size: u6,
-    wasted_bits: u6,
-    samples_iter: *SingleChannelIter(SampleT),
+    samples: SampleIter(SampleT),
 ) !void {
-    try self.writeBits(8, if (wasted_bits == 0) 2 else 3, .only16); // Verbatim coding
-    if (wasted_bits != 0) try self.writeBits(wasted_bits + 1, 1, .only16); // Write wasted_bits
+    // Subframe Header: SyncBit[0](1) + Verbatim Coding[000001](6) + WastedBits[0](1)
+    try self.writeBits(8, 1 << 1, .only16);
 
-    const real_sample_size = sample_size - wasted_bits;
-
-    while (samples_iter.next()) |sample| {
-        const sample_u: std.meta.Int(.unsigned, @bitSizeOf(SampleT)) = @bitCast(sample >> @intCast(wasted_bits));
-        try self.writeBits(real_sample_size, sample_u, .only16);
+    while (samples.next()) |sample| {
+        const sample_u: std.meta.Int(.unsigned, @bitSizeOf(SampleT)) = @bitCast(sample);
+        try self.writeBitsWrapped(sample_size, sample_u, .only16);
     }
 }
 
@@ -265,49 +240,75 @@ pub fn writeFixedSubframe(
     order: u8,
     rice_config: RiceConfig,
 ) !void {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FrameWriter.writeFixedSubframe" });
+    defer tracy_zone.end();
+
     // Bug writing subframe header?
     try self.writeBits(8, (8 | order) << 1, .only16); // N-th order Fixed coding
 
     // Write Unencoded warm-up samples
     for (0..order) |i| {
-        try self.writeBits(sample_size, @as(u32, @bitCast(residuals[i])) & (@as(u32, 0xffffffff) >> @intCast(32 - sample_size)), .only16);
+        try self.writeBitsWrapped(sample_size, @as(u32, @bitCast(residuals[i])), .only16);
     }
 
-    // Rice code with N nits param
-    try self.writeBits(2, @intFromEnum(rice_config.method), .only16);
-    // Partition order
-    try self.writeBits(4, rice_config.part_order, .only16);
+    // Rice code with N nits param(2) + Partition order(4)
+    try self.writeBits(2 + 4, (@intFromEnum(rice_config.method) << 4) | rice_config.part_order, .only16);
 
     const part_count = @as(usize, 1) << rice_config.part_order;
     const param_len: u6 = @intCast(@intFromEnum(rice_config.method) + 4);
 
     // Write Rice codes
-    var res = residuals[order..];
+    var remain_residuals = residuals[order..];
     var part_size = (residuals.len >> rice_config.part_order) - order;
     for (rice_config.params[0..part_count]) |param| { // Partition
         // Write rice param
-        try self.writeBits(param_len, param & @as(u6, 0x3f) >> (@intCast(6 - param_len)), .only16);
+        try self.writeBits(param_len, param, .only16);
+
+        const part_residuals = remain_residuals[0..part_size];
 
         if (param == rice_code.MAX_PARAM) { // Escaped
+            // Tracy
+            const tracy_zone_escaped = tracy.beginZone(@src(), .{ .name = "writeEscaped" });
+            defer tracy_zone_escaped.end();
+
             // Calc minimum bits to store the numbers
             var min_digits: u6 = 0;
-            for (res[0..part_size]) |r| {
-                const least_digits: u6 = (sample_size - @as(u6, @intCast(@clz(@abs(r))))) + 1;
-                if (least_digits > min_digits) min_digits = least_digits;
+            for (part_residuals) |r| {
+                const digits: u6 = (sample_size - @as(u6, @intCast(@clz(@abs(r))))) + 1;
+                if (digits > min_digits) min_digits = digits;
             }
             try self.writeBits(5, min_digits, .only16);
-            for (res[0..part_size]) |r| {
+            for (part_residuals) |r| {
                 try self.writeBits(min_digits, @as(u32, @bitCast(r)), .only16);
             }
+
+            // Tracy
+            tracy_zone_escaped.value(min_digits);
         } else { // Normal
             @branchHint(.likely);
-            for (res[0..part_size]) |r| { // Residuals
-                const rice: rice_code.RiceCode = .make(param, r);
-                try self.writeRice(rice, param);
-            }
+            // Tracy
+            const tracy_zone_rice = tracy.beginZone(@src(), .{ .name = "writeRices" });
+            defer tracy_zone_rice.end();
+
+            try self.writeRicePart(part_residuals, param);
         }
-        res = res[part_size..];
+        remain_residuals = remain_residuals[part_size..];
         part_size = residuals.len >> rice_config.part_order;
+    }
+}
+
+pub fn writeRicePart(self: *@This(), residuals: []i32, param: u6) !void {
+    for (residuals) |res| {
+        var rice: RiceCode = .make(param, res);
+        // Write Quotient
+        while (rice.quo > 63) : (rice.quo -= 64) {
+            @branchHint(.unlikely);
+            try self.writeBits(64, 0, .only16);
+        }
+        try self.writeBits(@intCast(rice.quo + 1), 1, .only16);
+        // Write Remainder
+        try self.writeBits(param, rice.rem, .only16);
     }
 }
 

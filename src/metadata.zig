@@ -22,14 +22,18 @@ pub const StreamInfo = struct {
     interchannel_samples: u64, // real 36
     min_frame_size: u24 = 0,
     max_frame_size: u24 = 0,
-    sample_rate: u24, // real 20
+    sample_rate: u20, // real 20
     min_block_size: u16,
     max_block_size: u16,
-    channels: u8, // real 3
-    bit_depth: u8, // real 5
+    channels: u4, // real 3
+    bit_depth: u6, // real 5
 
     pub fn bytes(self: @This()) [34]u8 {
         const nativeToBig = std.mem.nativeToBig;
+
+        const channels: u8 = self.channels;
+        const bit_depth: u8 = self.bit_depth;
+        const sample_rate: u24 = self.sample_rate;
 
         var result: [34]u8 = undefined;
         // block sizes
@@ -39,13 +43,13 @@ pub const StreamInfo = struct {
         @memcpy(result[4..7], &@as([3]u8, @bitCast(nativeToBig(u24, self.min_frame_size))));
         @memcpy(result[7..10], &@as([3]u8, @bitCast(nativeToBig(u24, self.max_frame_size))));
         // sample rate, channels and first bit of bit depth
-        var sample_rate_be: [3]u8 = @bitCast(nativeToBig(u24, self.sample_rate << 4));
-        sample_rate_be[2] |= self.channels - 1 << 1;
-        sample_rate_be[2] |= (self.bit_depth - 1) >> 4;
+        var sample_rate_be: [3]u8 = @bitCast(nativeToBig(u24, sample_rate << 4));
+        sample_rate_be[2] |= (channels - 1) << 1;
+        sample_rate_be[2] |= (bit_depth - 1) >> 4;
         @memcpy(result[10..13], &sample_rate_be);
         // lower 4 bits of bit depth and interchannel samples
         var interchannel_samples_be: [8]u8 = @bitCast(nativeToBig(u64, self.interchannel_samples << 24));
-        interchannel_samples_be[0] |= self.bit_depth - 1 << 4;
+        interchannel_samples_be[0] |= (bit_depth - 1) << 4;
         @memcpy(result[13..18], interchannel_samples_be[0..5]);
         // md5
         @memcpy(result[18..], &self.md5);

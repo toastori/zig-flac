@@ -1,11 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const tracy = @import("tracy");
 const FlacEncoder = @import("FlacEncoder.zig");
 const metadata = @import("metadata.zig");
 
-const BLOCK_SIZE = 4096;
-
 pub fn main() !void {
+    // Tracy
+    tracy.startupProfiler();
+    defer tracy.shutdownProfiler();
+    tracy.setThreadName("main");
+
     // Allocator
     var gpa = if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}){} else {};
     defer if (@TypeOf(gpa) != void) std.log.info("gpa: {s}", .{@tagName(gpa.deinit())});
@@ -31,9 +35,12 @@ fn encodeFile(allocator: std.mem.Allocator, input: []const u8, output: []const u
     var wav = try @import("WavReader.zig").init(input);
     defer wav.deinit();
 
-    var streaminfo = try wav.readIntoFlacStreaminfo();
+    var streaminfo = wav.flacStreaminfo() orelse {
+        std.log.err("format: flac does not support this wav format", .{});
+        std.process.exit(2);
+    }; // Flac unsupported format
 
     var flac_encoder: FlacEncoder = .make(0, 4, 0, 0, 0, 8, 0);
 
-    try flac_encoder.wavMain(output, allocator, &streaminfo, wav.reader());
+    try flac_encoder.wavMain(output, allocator, &streaminfo, &wav);
 }

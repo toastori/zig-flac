@@ -1,6 +1,8 @@
+.idea/
+.zig-cache/
+zig-out/
+
 reference/
 documentation/
 profiling/
 test/
-.zig-cache/
-zig-out/

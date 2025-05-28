@@ -5,8 +5,8 @@ Zig version 0.14.0
 ## Done
 - Encoding
   - Format
-    - All sampling rate (by flac standard) (only 44.1kHz tested yet)
-    - Full byte sample depth (by flac standatd) (only 16bits tested yet)
+    - All sampling rate (by flac standard) (only 44.1 kHz tested yet)
+    - Full byte sample depth (by flac standard) (only 16 bits tested yet)
   - Metadata
     - Streaminfo
       - Also MD5

@@ -1,4 +1,5 @@
 const std = @import("std");
+const tracy = @import("tracy");
 const sample_iter = @import("sample_iter.zig");
 
 const SampleIter = sample_iter.SampleIter;
@@ -34,6 +35,10 @@ pub fn bestOrder(
     min_order: u8,
     max_order: u8,
 ) !?OrderAndResiduals {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "fixed_prediction.bestOrder" });
+    defer tracy_zone.end();
+
     var tmp_slice = try allocator.alloc(i32, samples.len);
     defer allocator.free(tmp_slice);
     var best_slice = try allocator.alloc(i32, samples.len);
@@ -42,10 +47,14 @@ pub fn bestOrder(
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
     var best_sum: u64 = std.math.maxInt(u64);
-    for (min_order..max_order) |order| {
+    for (min_order..max_order + 1) |order| {
+        // Tracy
+        const tracy_zone_order = tracy.beginZone(@src(), .{ .name = "fixed_prediction.bestOrder_order" });
+        tracy_zone_order.value(order);
+        defer tracy_zone_order.end();
+
         var sum: u64 = 0;
 
-        samples.reset();
         var res_iter = samples.fixedResidualIter(@intCast(order)) orelse break;
         // Write to slice and add to sum for each residuals
         var idx: usize = order;
@@ -63,12 +72,12 @@ pub fn bestOrder(
             best_slice = tmp_slice;
             tmp_slice = tmp;
         }
+        samples.reset();
     }
     if (best_sum == std.math.maxInt(u64)) {
         allocator.free(best_slice);
         return null;
     }
-    samples.reset();
     for (0..best_order) |i| {
         best_slice[i] = samples.next().?;
     }

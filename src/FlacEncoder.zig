@@ -1,13 +1,17 @@
 const std = @import("std");
+const option = @import("option");
+const tracy = @import("tracy");
 const metadata = @import("metadata.zig");
 const rice_code = @import("rice_code.zig");
-const fixed_prediction = @import("fixed_prefiction.zig");
-const WavReader = @import("WavReader.zig");
+const fixed_prediction = @import("fixed_prediction.zig");
 
-const BufferedWriter = std.io.BufferedWriter(4096, std.fs.File.Writer);
-const FileWriter = BufferedWriter.Writer;
+const WavReader = @import("WavReader.zig");
 const MultiChannelIter = @import("sample_iter.zig").MultiChannelIter;
 const SingleChannelIter = @import("sample_iter.zig").SingleChannelIter;
+const SampleIter = @import("sample_iter.zig").SampleIter;
+
+const BufferedWriter = std.io.BufferedWriter(option.buffer_size, std.fs.File.Writer);
+const FileWriter = BufferedWriter.Writer;
 
 // -- Members --
 
@@ -46,8 +50,13 @@ pub fn wavMain(
     filename: []const u8,
     allocator: std.mem.Allocator,
     streaminfo: *metadata.StreamInfo,
-    wav: WavReader.BufferedReader.Reader,
+    wav: *WavReader,
 ) !void {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.wavMain" });
+    defer tracy_zone.end();
+
+    // Flac File Writer
     const file = try std.fs.cwd().createFile(filename, .{});
     defer file.close();
     var buffered_writer: BufferedWriter = .{ .unbuffered_writer = file.writer() };
@@ -60,10 +69,7 @@ pub fn wavMain(
 
     // Start Encoding flac
     var md5: std.crypto.hash.Md5 = try switch (streaminfo.bit_depth) {
-        8 => self.wavEncode(i8, allocator, streaminfo, wav, writer),
-        16 => self.wavEncode(i16, allocator, streaminfo, wav, writer),
-        24 => self.wavEncode(i24, allocator, streaminfo, wav, writer),
-        32 => self.wavEncode(i32, allocator, streaminfo, wav, writer),
+        8, 16, 24, 32 => self.wavEncode(allocator, streaminfo, wav, writer),
         else => unreachable,
     };
 
@@ -79,23 +85,29 @@ pub fn wavMain(
 /// Sample size independent encoding from WAV file
 fn wavEncode(
     self: @This(),
-    SampleT: type,
     allocator: std.mem.Allocator,
     streaminfo: *metadata.StreamInfo,
-    reader: WavReader.BufferedReader.Reader,
+    wav: *WavReader,
     writer: BufferedWriter.Writer,
 ) !std.crypto.hash.Md5 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var md5 = std.crypto.hash.Md5.init(.{});
 
-    var samples_iter: MultiChannelIter(SampleT) = try .init(allocator, streaminfo.channels);
+    var samples_iter: MultiChannelIter = try .init(allocator, streaminfo.channels);
     defer samples_iter.deinit(allocator);
 
     var frame_idx: u36 = 0;
-    while (try samples_iter.wavFill(reader, &md5, streaminfo.channels) or samples_iter.len != 0) : (frame_idx += 1) {
+    while (blk: {
+        try samples_iter.wavFill(wav, &md5, streaminfo.channels);
+        break :blk samples_iter.len != 0;
+    }) : (frame_idx += 1) {
         const blk_size = @min(4096, samples_iter.len);
         defer samples_iter.advanceStart(blk_size);
 
-        try self.writeFrame(SampleT, allocator, samples_iter, frame_idx, writer.any(), streaminfo.*, blk_size);
+        try self.writeFrame(alloc, samples_iter, frame_idx, writer.any(), streaminfo.*, blk_size);
     }
 
     return md5;
@@ -104,14 +116,17 @@ fn wavEncode(
 /// Write a frame from `MultiChannelIter` with block__size specified
 fn writeFrame(
     self: @This(),
-    SampleT: type,
     allocator: std.mem.Allocator,
-    samples_iter: MultiChannelIter(SampleT),
+    samples_iter: MultiChannelIter,
     frame_idx: u36,
     out: std.io.AnyWriter,
     streaminfo: metadata.StreamInfo,
     blk_size: u16,
 ) !void {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.writeFrame" });
+    defer tracy_zone.end();
+
     var fwriter = @import("FrameWriter.zig").init(out);
 
     // Write header start
@@ -124,22 +139,19 @@ fn writeFrame(
         frame_idx,
     );
 
-    std.debug.assert(fwriter.buffer_len == 0);
-
     // Write a subframe per channel
     for (0..streaminfo.channels) |i| {
         var iter = samples_iter.singleChannelIter(@intCast(i), blk_size);
-        const subframe_type = try self.chooseSingleChannelSubframeEncoding(SampleT, allocator, iter);
+        std.debug.assert(iter.len != 0);
 
-        const sample_size = @bitSizeOf(SampleT);
+        const subframe_type = try self.chooseSubframeEncoding(i32, allocator, iter.sampleIter());
 
         switch (subframe_type) {
-            .None => unreachable,
-            .Constant => try fwriter.writeConstantsubframe(sample_size, @bitCast(@as(isize, iter.peek().?))),
-            .Verbatim => try fwriter.writeVerbatimSubframe(SampleT, sample_size, 0, &iter),
+            .Constant => try fwriter.writeConstantSubframe(streaminfo.bit_depth, iter.peek().?),
+            .Verbatim => try fwriter.writeVerbatimSubframe(i32, streaminfo.bit_depth, iter.sampleIter()),
             .Fixed => |f| {
                 defer allocator.free(f.residuals);
-                try fwriter.writeFixedSubframe(sample_size, f.residuals, f.order, f.rice_config);
+                try fwriter.writeFixedSubframe(streaminfo.bit_depth, f.residuals, f.order, f.rice_config);
             },
             // else => unreachable, // TODO
         }
@@ -151,7 +163,6 @@ fn writeFrame(
 }
 
 const SubframeType = union(enum) {
-    None: void,
     Constant: void,
     Verbatim: void,
     Fixed: struct {
@@ -167,36 +178,40 @@ const SubframeType = union(enum) {
     // },
 };
 
-fn chooseSingleChannelSubframeEncoding(
+fn chooseSubframeEncoding(
     self: @This(),
     SampleT: type,
     allocator: std.mem.Allocator,
-    samples: SingleChannelIter(SampleT),
+    samples: SampleIter(SampleT),
 ) !SubframeType {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.chooseSingleChannelSubframeEncoding" });
+    defer tracy_zone.end();
+
     // -- Constant -- (First priority)
     constant: {
-        var iter = samples;
-        const first_sample: SampleT = iter.next() orelse return .{ .None = {} };
-        while (iter.next()) |sample| {
+        const first_sample: SampleT = samples.next().?;
+        while (samples.next()) |sample| {
             if (sample != first_sample) break :constant;
         }
         return .{ .Constant = {} };
     }
 
-    // - Verbatim -
+    // -- Verbatim -- (Least priority)
     if (samples.len < 5) return .{ .Verbatim = {} };
 
     const verbatim_size: usize = @as(usize, samples.len) * @bitSizeOf(SampleT);
     var subframe_type: SubframeType = .{ .Verbatim = {} }; // Default fallback to Verbatim
 
-    // - Fixed Prediction -
+    // -- Fixed Prediction --
     std.debug.assert(self.min_fixed_order <= self.max_fixed_order);
     std.debug.assert(self.max_fixed_order < 5);
-    var samples_iter = samples;
+
+    samples.reset();
     const best_fixed = try fixed_prediction.bestOrder(
         SampleT,
         allocator,
-        samples_iter.sampleIter(),
+        samples,
         self.min_fixed_order,
         self.max_fixed_order,
     ) orelse return subframe_type;

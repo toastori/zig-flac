@@ -1,4 +1,5 @@
 const std = @import("std");
+const tracy = @import("tracy");
 const sample_iter = @import("sample_iter.zig");
 const FixedResidualIter = sample_iter.FixedResidualIter;
 
@@ -58,6 +59,10 @@ fn calcRiceParam(
     max_part: u6,
     pred_order: u8,
 ) std.meta.Tuple(&.{ usize, RiceConfig }) {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "rice_code.calcRiceParam" });
+    defer tracy_zone.end();
+
     var sums: [MAX_ORDER + 1][MAX_PART]u64 = undefined;
     var optimal_bit_count: usize = std.math.maxInt(usize);
     var optimal_part_order = min_part;
@@ -101,6 +106,10 @@ fn calcSums(
     pred_order: u8,
     sums: *[MAX_ORDER + 1][MAX_PART]u64,
 ) void {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "rice_code.calcSums" });
+    defer tracy_zone.end();
+
     std.debug.assert(sums.len > max_part);
     // Sum for highest level
     var res = residuals[pred_order..];
@@ -131,13 +140,21 @@ fn calcOptimalParams(
     pred_order: u8,
     sums: *[MAX_PART]u64,
 ) std.meta.Tuple(&.{ usize, RiceConfig }) {
+    // Tracy
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "rice_code.calcOptimalParams" });
+    tracy_zone.value(part_order);
+    defer tracy_zone.end();
+
     const part_count: usize = @as(usize, 1) << part_order;
     var all_bits: usize = 0;
     var config: RiceConfig = .{};
 
     var part_size: usize = (blk_size >> part_order) - pred_order;
     for (0..part_count) |i| {
-        if (i == 1) part_size += pred_order;
+        // Tracy
+        const tracy_zone_part = tracy.beginZone(@src(), .{ .name = "rice_code.findOptimalParam" });
+        tracy_zone_part.value(i);
+        defer tracy_zone_part.end();
 
         const optimal_param, const optimal_bit_count =
             findOptimalParam(sums[i], part_size);
@@ -146,6 +163,8 @@ fn calcOptimalParams(
 
         if (optimal_param >= MAX_PARAM_4BIT and optimal_param != MAX_PARAM)
             config.method = .FIVE;
+
+        part_size = blk_size >> part_order;
     }
     config.part_order = part_order;
 

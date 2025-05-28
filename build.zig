@@ -5,11 +5,6 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const tracy_enable = b.option(bool, "tracy", "Enable tracy (default: false)") orelse false;
 
-    if (target.result.cpu.arch.endian() == .big) {
-        std.log.err("This program/library does not support big endian", .{});
-        return;
-    }
-
     // Define Options
     const option = b.addOptions();
     const d_buffer_size = b.option(usize, "buffer_size", "Set buffer size of reader and writer (default: 4096)") orelse 4096;

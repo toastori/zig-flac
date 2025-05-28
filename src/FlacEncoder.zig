@@ -90,9 +90,6 @@ fn wavEncode(
     wav: *WavReader,
     writer: BufferedWriter.Writer,
 ) !std.crypto.hash.Md5 {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
 
     var md5 = std.crypto.hash.Md5.init(.{});
 
@@ -107,7 +104,7 @@ fn wavEncode(
         const blk_size = @min(4096, samples_iter.len);
         defer samples_iter.advanceStart(blk_size);
 
-        try self.writeFrame(alloc, samples_iter, frame_idx, writer.any(), streaminfo.*, blk_size);
+        try self.writeFrame(allocator, samples_iter, frame_idx, writer.any(), streaminfo.*, blk_size);
     }
 
     return md5;

@@ -5,8 +5,8 @@ Zig version 0.14.0
 ## Done
 - Encoding
   - Format
-    - All sampling rate (by flac standard) (only 44.1 kHz tested yet)
-    - Full byte sample depth (by flac standard) (only 16 bits tested yet)
+    - All sampling rate (by flac standard) (44.1/96 kHz tested)
+    - Full byte sample depth (by flac standard) (16/24 bits tested)
   - Metadata
     - Streaminfo
       - Also MD5
@@ -18,7 +18,8 @@ Zig version 0.14.0
     - Fixed Prediction
       - Escaped partition not tested
 - Decoding
-  - PCM s16le WAV file (naively)
+  - PCM WAV file (little endian)
+  - PCM WAV extensible file (little endian)
 ## Progressing
 - Subframe
   - Subframe type selection

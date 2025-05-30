@@ -6,7 +6,7 @@ const BLOCK_SIZE = 4096;
 
 pub const BufferedReader = std.io.BufferedReader(option.buffer_size, std.fs.File.Reader);
 const NoEofError = BufferedReader.Reader.NoEofError;
-const FlacStreaminfo = @import("metadata.zig").StreamInfo;
+const FlacStreaminfo = @import("flac").metadata.StreamInfo;
 
 // -- Members --
 
@@ -46,48 +46,44 @@ pub fn deinit(self: @This()) void {
 /// Get next sample \
 /// Samples are read as bit extended `i32`
 pub fn nextSample(self: *@This()) ?i32 {
-    const shift_amt: u5 = @intCast(32 - self.bytes_per_sample * 8);
+    const shift_amt: u5 = @intCast(32 - self.bit_depth);
 
     var sample: i32 = undefined;
-    const sample_bytes = std.mem.asBytes(&sample);
-    self.read(sample_bytes[0..self.bytes_per_sample]) catch return null;
-    // sign extend
-    sample = std.mem.littleToNative(i32, sample) & (@as(i32, -1) << shift_amt);
+    const sample_bytes = std.mem.asBytes(&sample)[4-self.bytes_per_sample..];
+    self.read(sample_bytes) catch return null;
+    sample = std.mem.littleToNative(i32, sample);
     // unsigned to signed
-    if (self.bytes_per_sample == 1) {
-        const subtract_amt: i32 = 128 >> (8 - self.bit_depth);
-        sample -= subtract_amt;
-    }
+    if (self.bytes_per_sample == 1)
+        sample -= @as(i32, 128) >> @intCast(8 - self.bit_depth);
+    // sign extend
+    sample >>= shift_amt;
     return sample;
 }
 
 /// Get next sample and update MD5 \
 /// Samples are read as bit extended `i32`
 pub fn nextSampleMd5(self: *@This(), md5: *std.crypto.hash.Md5) ?i32 {
-    const shift_amt: u5 = @intCast(32 - self.bytes_per_sample * 8);
+    const shift_amt: u5 = @intCast(32 - self.bit_depth);
 
     var sample: i32 = undefined;
-    const sample_bytes = std.mem.asBytes(&sample);
-    self.read(sample_bytes[0..self.bytes_per_sample]) catch return null;
-    md5.update(sample_bytes[0..self.bytes_per_sample]);
-    // sign extend
-    sample = (std.mem.littleToNative(i32, sample) << shift_amt) >> shift_amt;
+    const sample_bytes = std.mem.asBytes(&sample)[4-self.bytes_per_sample..];
+    self.read(sample_bytes) catch return null;
+    md5.update(sample_bytes);
+    sample = std.mem.littleToNative(i32, sample);
     // unsigned to signed
-    if (self.bytes_per_sample == 1) {
-        const subtract_amt: i32 = @as(i32, 128) >> @intCast(8 - self.bit_depth);
-        sample -= subtract_amt;
-    }
+    if (self.bytes_per_sample == 1)
+        sample -= @as(i32, 128) >> @intCast(8 - self.bit_depth);
+    // sign extend
+    sample >>= shift_amt;
     return sample;
 }
 
 /// Return null when flac unsupported format
 pub fn flacStreaminfo(self: @This()) ?FlacStreaminfo {
-    if (
-        self.bit_depth > 32 or
+    if (self.bit_depth > 32 or
         self.channels > 8 or
         self.sample_rate >= 1 << 20 or
-        self.samples_count >= 1 << 36
-    ) return null;
+        self.samples_count >= 1 << 36) return null;
     return .{
         .sample_rate = @intCast(self.sample_rate),
         .channels = @intCast(self.channels),
@@ -131,7 +127,7 @@ fn getFmt(self: *@This()) (std.fs.File.Reader.NoEofError || EncodingError)!void 
         1...32 => |d| d,
         else => return EncodingError.UnsupportBitDepth,
     };
-    self.bytes_per_sample = @intCast(self.bit_depth + 7 >> 3);
+    self.bytes_per_sample = @intCast(block_align / self.channels);
     if (byte_rate != self.sample_rate * self.channels * self.bytes_per_sample)
         return EncodingError.BitRateUnmatch;
     if (codec == .PCM_EXTEND) {
@@ -145,7 +141,8 @@ fn getFmt(self: *@This()) (std.fs.File.Reader.NoEofError || EncodingError)!void 
     }
     // Skip unknown subchunks until "data"
     // 4 bytes tag always follow u32le length of subchunk
-    while (!std.mem.eql(u8,
+    while (!std.mem.eql(
+        u8,
         &(self.readBytes(4) catch return EncodingError.DataNotFound),
         "data",
     )) {
@@ -181,7 +178,6 @@ inline fn skipBytes(self: *@This(), num_bytes: u64) NoEofError!void {
     return self.buffered_reader.reader().skipBytes(num_bytes, .{});
 }
 
-
 // -- Error --
 
 pub const EncodingError = error{
@@ -199,4 +195,9 @@ pub const EncodingError = error{
     DataNotFound,
     /// Unmatch to `sample_rate * channels * bit_depth / 8`
     BitRateUnmatch,
+};
+
+pub const StreamError = error{
+    // When `sample_count % channel_count != 0`
+    IncompleteStream,
 };

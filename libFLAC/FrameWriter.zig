@@ -117,7 +117,7 @@ pub fn writeHeader(
         try self.writeBits(4, 1, .both);
     } else if (blk: {
         const rem = block_size / 144;
-        break :blk @clz(rem) + @ctz(rem) == @bitSizeOf(usize) - 1 and @ctz(rem) <= 5 and @ctz(rem) >= 2;
+        break :blk @as(u8, @clz(rem)) + @as(u8, @ctz(rem)) == @bitSizeOf(usize) - 1 and @ctz(rem) <= 5 and @ctz(rem) >= 2;
     }) {
         try self.writeBits(4, @ctz(block_size / 144), .both);
     } else if (block_size <= 0x100) {
@@ -202,7 +202,7 @@ pub fn writeHeader(
     switch (uncommon_sample_rate) {
         .none => {},
         .byte => try self.writeBits(8, @intCast(block_size), .both),
-        else => try self.writeBits(16, @intCast(block_size * @intFromEnum(uncommon_sample_rate)), .both),
+        else => try self.writeBits(16, @intCast(block_size / @intFromEnum(uncommon_sample_rate)), .both),
     }
     try self.flushBytes(.both);
     // Write Crc8

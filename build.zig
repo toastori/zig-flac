@@ -10,14 +10,33 @@ pub fn build(b: *std.Build) void {
     const d_buffer_size = b.option(usize, "buffer_size", "Set buffer size of reader and writer (default: 4096)") orelse 4096;
     option.addOption(usize, "buffer_size", d_buffer_size);
 
+    const option_mod = option.createModule();
+
+    // Lib Module
+    const libflac_mod = b.addModule(
+        "libFLAC",
+        .{
+            .root_source_file = b.path("libFLAC/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = optimize != .Debug,
+            .link_libcpp = tracy_enable,
+        },
+    );
+    // libflac_mod.addOptions("option", option);
+    libflac_mod.addImport("option", option_mod);
+
     // Executable Module
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = optimize != .Debug,
         .link_libcpp = tracy_enable,
     });
-    exe_mod.addOptions("option", option);
+    // exe_mod.addOptions("option", option);
+    exe_mod.addImport("option", option_mod);
+    exe_mod.addImport("flac", libflac_mod);
 
     // Tracy Module
     const tracy_dep = b.dependency("tracy", .{
@@ -26,13 +45,16 @@ pub fn build(b: *std.Build) void {
         .tracy_enable = tracy_enable,
     });
     exe_mod.addImport("tracy", tracy_dep.module("tracy"));
-    if (tracy_enable) exe_mod.linkLibrary(tracy_dep.artifact("tracy"));
+    libflac_mod.addImport("tracy", tracy_dep.module("tracy"));
+    if (tracy_enable) {
+        exe_mod.linkLibrary(tracy_dep.artifact("tracy"));
+        libflac_mod.linkLibrary(tracy_dep.artifact("tracy"));
+    }
 
     // Executable
     const exe = b.addExecutable(.{
         .name = "flac",
         .root_module = exe_mod,
-        .strip = optimize != .Debug,
     });
 
     b.installArtifact(exe);
@@ -52,6 +74,6 @@ pub fn build(b: *std.Build) void {
     });
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
-    const test_step = b.step("test", "Run unit tests");
+    const test_step = b.step(".test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
 }

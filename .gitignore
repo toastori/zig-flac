@@ -2,7 +2,6 @@
 .zig-cache/
 zig-out/
 
-reference/
-documentation/
-profiling/
-test/
+.reference/
+.profiling/
+.test/

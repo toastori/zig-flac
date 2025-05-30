@@ -18,7 +18,7 @@ pub const BlockHeader = packed struct(u8) {
 };
 
 pub const StreamInfo = struct {
-    md5: [16]u8,
+    md5: [16]u8 = @splat(0),
     interchannel_samples: u64, // real 36
     min_frame_size: u24 = 0,
     max_frame_size: u24 = 0,

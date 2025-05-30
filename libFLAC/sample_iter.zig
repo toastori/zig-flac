@@ -3,18 +3,17 @@ const builtin = @import("builtin");
 const tracy = @import("tracy");
 const mode = @import("builtin").mode;
 
-const WavReader = @import("WavReader.zig");
-
 const LEN_PER_CHANNEL = std.math.maxInt(u16);
 
-/// Iterator of multiple channel (for writing) \
-/// Call `singleChannelIter()` for single channel reading
+/// Iterator of multiple channel (for writing)
+/// implemented in circular buffer \
+/// Call `singleChannelIter()` for single channel reading iterator
 pub const MultiChannelIter = struct {
     /// Slice of allocated buffer
     big_samples: []i32,
     /// Channel separated samples in queue \
-    /// Since flac's max channel count is 8, an array of 8 slice saved an allocation while sacrificing very little memory
-    /// (since we don't need several instance of MultiChannelIter)
+    /// Since flac's max channel count is 8,
+    /// an array of 8 slice saved an allocation while sacrificing very little memory
     channel_samples: [8][*]i32,
     /// Head pointer of the queue
     start: u16 = 0,
@@ -54,16 +53,53 @@ pub const MultiChannelIter = struct {
         };
     }
 
-    /// Fill the iterator with WAV bytes reading from file \
-    /// Assume file cursor aligned to the sample of first channel's first byte, and the file is a correct WAV file \
+    /// Supply a slice of samples with length of channels count \
+    /// return true if there are still space in the iterator to fill
+    pub fn addInterleavedSample(self: *@This(), samples: []i32) bool {
+        std.debug.assert(if (mode == .Debug) samples.len == self.channel_count else true);
+        for (samples, 0..) |sample, ch| {
+            self.channel_samples[ch][self.start +% self.len] = sample;
+        }
+        self.len += 1;
+        return self.len != LEN_PER_CHANNEL;
+    }
+
+    /// Fill the iterator with contineously calling `nextFn(nextFn_args...)` \
+    /// Expect the return type of `nextFn` be !?iN or ?iN while N <= 32 (eg !?i32) \
     /// \
-    /// return `false` if reader reach end of stream
-    pub fn wavFill(
+    /// Error return by `nextFn` will be returned for the caller to catch manually
+    pub fn iterFill(
         self: *@This(),
-        wav: *WavReader,
-        md5: *std.crypto.hash.Md5,
         channels_count: u8,
+        comptime nextFn: anytype,
+        nextFn_args: anytype,
     ) !void {
+        // -- Type Check --
+        const IS_ERROR: bool, const IS_OPTIONAL: bool = comptime switch (@typeInfo(@TypeOf(nextFn))) {
+            .@"fn" => |f| hav_err: {
+                var is_error, var is_option = .{ false, false };
+                r_ty: switch (@typeInfo(f.return_type.?)) {
+                    .error_union => |eu| {
+                        is_error = true;
+                        continue :r_ty if (!is_option) @typeInfo(eu.payload) else .null;
+                    },
+                    .optional => |op| {
+                        is_option = true;
+                        continue :r_ty @typeInfo(op.child);
+                    },
+                    .int => |i| if (i.signedness == .unsigned or i.bits > 32) continue :r_ty .null,
+                    else => {
+                        is_error = false;
+                        is_option = false;
+                    },
+                }
+                if (!is_error and !is_option)
+                    @compileError("nextFn: return type: expect either !?iN or ?iN while N <= 32 (eg !?i32), but " ++ @typeName(f.return_type) ++ " is found");
+                break :hav_err .{ is_error, is_option };
+            },
+            else => @compileError("nextFn: expect *const fn (...) ?i32, but " ++ @typeName(@TypeOf(nextFn)) ++ " is found."),
+        };
+
         // Tracy
         const tracy_zone = tracy.beginZone(@src(), .{ .name = "MultiSampleIter.wavFill" });
         defer tracy_zone.end();
@@ -71,20 +107,25 @@ pub const MultiChannelIter = struct {
         if (mode == .Debug) std.debug.assert(self.channel_count == self.channel_count);
 
         while (self.len < LEN_PER_CHANNEL) : (self.len += 1) {
-            for (0..channels_count) |i| {
-                const sample = wav.nextSampleMd5(md5) orelse {
-                    if (i != 0) {
+            for (self.channel_samples[0..channels_count]) |ch| {
+                const sample_1 = @call(.auto, nextFn, nextFn_args);
+                const sample_2 = if (comptime !IS_ERROR) sample_1 else try sample_1;
+                const sample: i32 = if (comptime !IS_OPTIONAL) sample_2 else sample_2 orelse {
+                    if (@intFromPtr(ch) != @intFromPtr(self.big_samples.ptr)) { // not the first channel
                         @branchHint(.unlikely);
                         std.log.err("input: incomplete stream", .{});
                         std.process.exit(3);
                     }
                     return;
                 };
-                self.channel_samples[i][self.start +% self.len] = sample;
+                ch[self.start +% self.len] = sample;
             }
         }
     }
 
+    /// Advance the `start` ptr by `amount` \
+    /// Pop the first `amount` of samples from the iterator
+    /// to leave spaces for new samples
     pub fn advanceStart(self: *@This(), amount: u16) void {
         std.debug.assert(amount <= LEN_PER_CHANNEL);
 
@@ -132,7 +173,9 @@ pub const SingleChannelIter = struct {
     }
 };
 
-/// Read residuals after FixedPrediction
+/// Read residuals after FixedPrediction \
+/// Residual range unchecked, should be checked while
+/// selecting subframe method
 pub fn FixedResidualIter(SampleT: type) type {
     std.debug.assert(SampleT == i32 or SampleT == i64);
     return struct {
@@ -153,18 +196,90 @@ pub fn FixedResidualIter(SampleT: type) type {
 
         const fp = @import("fixed_prediction.zig");
 
-        pub fn next(self: *@This()) ResidualRangeError!?i32 {
+        pub fn next(self: *@This()) ?i32 {
             const sample = self.iterator.next() orelse return null;
             const residual = fp.calcResidual(sample, self.prev_samples, self.order);
             self.prev_samples = std.simd.shiftElementsRight(self.prev_samples, 1, sample);
-            if (residual <= std.math.minInt(i32) or residual > std.math.maxInt(i32))
-                return ResidualRangeError.OutOfRange;
             return @intCast(residual);
         }
 
         pub fn peek(self: @This()) ?i32 {
             const sample = self.iterator.peek() orelse return null;
             return fp.calcResidual(sample, self.prev_samples, self.order);
+        }
+    };
+}
+
+/// Calculate order [0,4] all at once
+pub fn MultiOrderFixedResidualIter(SampleT: type) type {
+    std.debug.assert(SampleT == i32 or SampleT == i64);
+    return struct {
+        iterator: SampleIter(SampleT),
+
+        prev_samples: @Vector(4, i64),
+
+        const fp = @import("fixed_prediction.zig");
+
+        /// Return an iterator and total_error for each order up to first 4 samples
+        /// result `total_error` over maxInt(u49) means out of range,
+        /// since the value will never be reached with all values in range
+        pub fn init(iterator: SampleIter(SampleT), comptime check_range: bool) std.meta.Tuple(&.{ @This(), [fp.MAX_ORDER]u64 }) {
+            std.debug.assert(iterator.len >= fp.MAX_ORDER);
+
+            var result: [fp.MAX_ORDER]u64 = @splat(0);
+            var result_iter: @This() = .{ .iterator = iterator, .prev_samples = undefined };
+
+            if (!check_range) {
+                for (0..fp.MAX_ORDER) |iteration| {
+                    const sample = iterator.next().?;
+                    result[0] += @abs(sample);
+                    for (1..iteration + 1) |order|
+                    result[order] += @abs(fp.calcResidual(sample, result_iter.prev_samples, order));
+                    result_iter.prev_samples =
+                    std.simd.shiftElementsRight(result_iter.prev_samples, 1, sample);
+                }
+            } else {
+                for (0..fp.MAX_ORDER) |iteration| {
+                    const sample = iterator.next().?;
+
+                    if (fp.inRange(sample))
+                        result[0] += @abs(sample)
+                    else result[0] = std.math.maxInt(u49);
+
+                    for (1..iteration + 1) |order| {
+                        const residual = fp.calcResidual(sample, result_iter.prev_samples, order);
+                        if (fp.inRange(residual))
+                            result[order] += @abs(residual)
+                        else result[order] = std.math.maxInt(u49);
+                    }
+                    result_iter.prev_samples =
+                    std.simd.shiftElementsRight(result_iter.prev_samples, 1, sample);
+                }
+            }
+
+            return .{ result_iter, result };
+        }
+
+        pub fn next(self: *@This(), comptime check_range: bool) ?[5]?i32 {
+            const sample = self.iterator.next() orelse return null;
+            var result: [5]?i32 = undefined;
+            if (comptime !check_range) {
+                result[0] = @intCast(sample);
+                for (1..fp.MAX_ORDER + 1) |order|
+                    result[order] = @intCast(fp.calcResidual(sample, self.prev_samples, order));
+                self.prev_samples =
+                    std.simd.shiftElementsRight(self.prev_samples, 1, sample);
+            } else {
+                if (result[0]) |_|
+                    result[0] = if (fp.inRange(sample)) null else @as(i32, @intCast(sample));
+
+                for (1..fp.MAX_ORDER + 1) |order| {
+                    const residual = fp.calcResidual(sample, self.prev_samples, order);
+                    if (result[order]) |_|
+                        result[order] = if (fp.inRange(residual)) null else @intCast(residual);
+                }
+            }
+            return result;
         }
     };
 }
@@ -222,26 +337,27 @@ pub fn SampleIter(SampleT: type) type {
         /// Return ResidualIter with applyed coefficients and prev_samples \
         /// return `null` when iterator's samples are less than `order`
         pub fn fixedResidualIter(self: @This(), order: u8) ?FixedResidualIter(SampleT) {
-                var prev_samples: @Vector(4, i64) = undefined;
-                for (1..order + 1) |i| {
-                    prev_samples[order - i] = @intCast(self.next() orelse return null);
-                }
-                return .{
-                    .iterator = self,
-                    .prev_samples = prev_samples,
-                    .order = order,
-                };
+            std.debug.assert(self.len >= order);
+            var prev_samples: @Vector(4, i64) = undefined;
+            for (1..order + 1) |i| {
+                prev_samples[order - i] = @intCast(self.next() orelse return null);
             }
+            return .{
+                .iterator = self,
+                .prev_samples = prev_samples,
+                .order = order,
+            };
+        }
 
-            /// Retreive next sample and increment idx
+        /// Retreive next sample and increment idx
         pub fn next(self: @This()) ?SampleT {
-                return self.nextFn(self.iterator);
-            }
+            return self.nextFn(self.iterator);
+        }
 
-            /// Peek next sample WITHOUT incrementing idx
+        /// Peek next sample WITHOUT incrementing idx
         pub fn peek(self: @This()) ?SampleT {
-                return self.peekFn(self.iterator.*);
-            }
+            return self.peekFn(self.iterator.*);
+        }
 
         pub fn reset(self: @This()) void {
             return self.resetFn(self.iterator);

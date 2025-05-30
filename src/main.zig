@@ -1,8 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const tracy = @import("tracy");
-const FlacEncoder = @import("FlacEncoder.zig");
-const metadata = @import("metadata.zig");
+
+const flac = @import("flac");
+
+const wav2flac = @import("wav2flac.zig");
 
 pub fn main() !void {
     // Tracy
@@ -40,7 +42,5 @@ fn encodeFile(allocator: std.mem.Allocator, input: []const u8, output: []const u
         std.process.exit(2);
     }; // Flac unsupported format
 
-    var flac_encoder: FlacEncoder = .make(0, 4, 0, 0, 0, 8, 0);
-
-    try flac_encoder.wavMain(output, allocator, &streaminfo, &wav);
+    try wav2flac.main(output, allocator, &streaminfo, &wav);
 }

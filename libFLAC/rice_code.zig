@@ -42,7 +42,8 @@ pub fn calcRiceParamFixed(
     pred_order: u8,
 ) std.meta.Tuple(&.{ usize, RiceConfig }) {
     const pred_order_limited: u6 = if (pred_order != 0)
-        @intCast(std.math.log2_int(usize, residuals.len / pred_order))
+        // log2(a / b)
+        @intCast(std.math.log2_int(usize, residuals.len) - std.math.log2_int(usize, pred_order))
     else
         std.math.maxInt(u6);
 

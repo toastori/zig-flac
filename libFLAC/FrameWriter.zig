@@ -39,6 +39,7 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
 
     const remain_bits: u7 = 64 - @as(u7, self.buffer_len);
     if (remain_bits <= size) {
+        self.bytes_written += 8;
         self.buffer <<= if (builtin.mode == .Debug) @truncate(remain_bits) else @intCast(remain_bits);
         self.buffer |= value >> @intCast(size - remain_bits);
 
@@ -48,8 +49,6 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
 
         self.buffer_len = @intCast(size - remain_bits);
         self.buffer = value;
-
-        self.bytes_written += 8;
     } else {
         @branchHint(.likely);
         self.buffer <<= @intCast(size);

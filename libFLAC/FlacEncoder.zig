@@ -41,7 +41,11 @@ pub fn init(writer: std.io.AnyWriter) !@This() {
 
 // -- Methods --
 
-/// Write a frame from `MultiChannelIter` with block__size specified
+/// Write a frame from `MultiChannelIter` with block__size specified \
+/// \
+/// return:
+/// - `Bytes of frame` for updating stream info
+/// - `Error` when writing
 pub fn writeFrame(
     self: *@This(),
     allocator: std.mem.Allocator,
@@ -49,7 +53,7 @@ pub fn writeFrame(
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
     blk_size: u16,
-) !void {
+) !u24 {
     // Tracy
     const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.writeFrame" });
     defer tracy_zone.end();
@@ -94,6 +98,8 @@ pub fn writeFrame(
 
     // Close subframe
     try fwriter.writeCrc16();
+
+    return fwriter.bytes_written;
 }
 
 fn chooseSubframeEncoding(

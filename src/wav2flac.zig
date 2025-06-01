@@ -66,7 +66,11 @@ fn encode(
         const blk_size = @min(4096, samples_iter.len);
         defer samples_iter.advanceStart(blk_size);
 
-        try flac_enc.writeFrame(allocator, samples_iter, frame_idx, streaminfo.*, blk_size);
+        const frame_size =
+            try flac_enc.writeFrame(allocator, samples_iter, frame_idx, streaminfo.*, blk_size);
+
+        // Update min/max framesize in streaminfo
+        streaminfo.updateFrameSize(frame_size);
     }
 
     return md5;

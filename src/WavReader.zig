@@ -69,8 +69,8 @@ pub fn nextSampleMd5(self: *@This(), md5: *std.crypto.hash.Md5) ?i32 {
 
 /// Return null when flac unsupported format
 pub fn flacStreaminfo(self: @This()) ?FlacStreaminfo {
-    if (self.bit_depth > 32 or
-        self.channels > 8 or
+    if (self.bit_depth < 4 or self.bit_depth > 32 or
+        self.channels == 0 or self.channels > 8 or
         self.sample_rate >= 1 << 20 or
         self.samples_count >= 1 << 36) return null;
     return .{
@@ -81,8 +81,6 @@ pub fn flacStreaminfo(self: @This()) ?FlacStreaminfo {
         .md5 = undefined,
         .min_block_size = BLOCK_SIZE,
         .max_block_size = BLOCK_SIZE,
-        .min_frame_size = 0,
-        .max_frame_size = 0,
     };
 }
 

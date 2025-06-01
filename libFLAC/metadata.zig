@@ -17,16 +17,27 @@ pub const BlockHeader = packed struct(u8) {
     };
 };
 
+/// Set min/max_frame_size to 0 if you dont want to
+/// count bytes written for each frame
 pub const StreamInfo = struct {
     md5: [16]u8 = @splat(0),
     interchannel_samples: u64, // real 36
-    min_frame_size: u24 = 0,
+    /// Set to 0 if you are not dealing with them
+    min_frame_size: u24 = std.math.maxInt(u24),
+    /// Set to 0 if you are not dealing with them
     max_frame_size: u24 = 0,
     sample_rate: u20, // real 20
     min_block_size: u16,
     max_block_size: u16,
     channels: u4, // real 3
     bit_depth: u6, // real 5
+
+    pub fn updateFrameSize(self: *@This(), frame_size: u24) void {
+        if (frame_size > self.max_frame_size)
+            self.max_frame_size = frame_size
+        else if (frame_size < self.min_frame_size)
+            self.min_frame_size = frame_size;
+    }
 
     pub fn bytes(self: @This()) [34]u8 {
         const nativeToBig = std.mem.nativeToBig;

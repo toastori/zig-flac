@@ -16,8 +16,10 @@ writer: std.io.AnyWriter,
 buffer: u64 = 0,
 buffer_len: u6 = 0,
 
-crc16: std.hash.crc.Crc16Umts = .init(),
 crc8: std.hash.crc.Crc8Smbus = .init(),
+crc16: std.hash.crc.Crc16Umts = .init(),
+
+bytes_written: u24 = 0,
 
 // -- Initializer --
 
@@ -46,6 +48,8 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
 
         self.buffer_len = @intCast(size - remain_bits);
         self.buffer = value;
+
+        self.bytes_written += 8;
     } else {
         @branchHint(.likely);
         self.buffer <<= @intCast(size);
@@ -64,6 +68,8 @@ pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64, comptime ca
 pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) !void {
     var len = self.buffer_len;
     self.buffer_len = 0;
+
+    self.bytes_written += len + 7 / 8;
     while (len >= 8) {
         len -= 8;
         const byte: u8 = @truncate(self.buffer >> len);
@@ -83,12 +89,16 @@ pub inline fn writeCrc8(self: *@This()) !void {
     const value = self.crc8.final();
     self.calcCrc(.only16, &std.mem.toBytes(value));
     try self.writer.writeInt(u8, value, .little);
+
+    self.bytes_written += 1;
 }
 
 /// Write Crc16 in frame footer \
 /// Make sure to call `flushByte()` before this
 pub inline fn writeCrc16(self: *@This()) !void {
     try self.writer.writeInt(u16, self.crc16.final(), .big);
+
+    self.bytes_written += 2;
 }
 
 /// Write frame header

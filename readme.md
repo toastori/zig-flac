@@ -5,11 +5,12 @@ Zig version 0.14.0
 ## Done
 - Encoding
   - Format
-    - All sampling rate (by flac standard) (44.1/96 kHz tested)
+    - All sampling rates (by flac standard) (44.1/96 kHz tested)
     - Full byte sample depth (by flac standard) (16/24 bits tested)
   - Metadata
     - Streaminfo
-      - Also MD5
+      - Write min/max frame size
+      - Calculate MD5
     - Vendor Signature
   - Subframe
     - Subframe type selection

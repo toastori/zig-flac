@@ -23,8 +23,6 @@ pub fn build(b: *std.Build) void {
             .link_libcpp = tracy_enable,
         },
     );
-    // libflac_mod.addOptions("option", option);
-    libflac_mod.addImport("option", option_mod);
 
     // Executable Module
     const exe_mod = b.createModule(.{
@@ -34,7 +32,6 @@ pub fn build(b: *std.Build) void {
         .strip = optimize != .Debug,
         .link_libcpp = tracy_enable,
     });
-    // exe_mod.addOptions("option", option);
     exe_mod.addImport("option", option_mod);
     exe_mod.addImport("flac", libflac_mod);
 

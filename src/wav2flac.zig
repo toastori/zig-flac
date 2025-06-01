@@ -1,9 +1,12 @@
 const std = @import("std");
 const tracy = @import("tracy");
+const option = @import("option");
 
 const flac = @import("flac");
 
 const WavReader = @import("WavReader.zig");
+
+pub const BufferedWriter = std.io.BufferedWriter(option.buffer_size, std.fs.File.Writer);
 
 /// Main function for encoding flac from WAV file
 pub fn main(
@@ -16,8 +19,12 @@ pub fn main(
     const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.wavMain" });
     defer tracy_zone.end();
 
+    const file = try std.fs.cwd().createFile(filename, .{});
+    defer file.close();
+    var buffered_writer: BufferedWriter = .{.unbuffered_writer = file.writer()};
+
     // Flac File Writer
-    var flac_enc = try flac.Encoder.init(filename);
+    var flac_enc = try flac.Encoder.init(buffered_writer.writer().any());
 
     // Skip Signature and Streaminfo
     try flac_enc.skipHeader();
@@ -26,17 +33,17 @@ pub fn main(
 
     // Start Encoding flac
     var md5: std.crypto.hash.Md5 = try switch (streaminfo.bit_depth) {
-        8, 16, 24, 32 => encode(allocator, streaminfo, wav, &flac_enc),
+        4...32 => encode(allocator, streaminfo, wav, &flac_enc),
         else => unreachable,
     };
 
     // Always flush BufferedWriter after writing
-    try flac_enc.buffered_writer.flush();
+    try buffered_writer.flush();
     // Seek back and write Signature and Streaminfo
     md5.final(&streaminfo.md5);
-    try flac_enc.file.seekTo(0);
+    try file.seekTo(0);
     try flac_enc.writeHeader(streaminfo.*, false);
-    try flac_enc.buffered_writer.flush();
+    try buffered_writer.flush();
 }
 
 /// Sample size independent encoding from WAV file
@@ -53,7 +60,7 @@ fn encode(
 
     var frame_idx: u36 = 0;
     while (blk: {
-        try samples_iter.iterFill(streaminfo.channels, WavReader.nextSampleMd5, .{ wav, &md5 });
+        try samples_iter.iterFill(WavReader.nextSampleMd5, .{ wav, &md5 });
         break :blk samples_iter.len != 0;
     }) : (frame_idx += 1) {
         const blk_size = @min(4096, samples_iter.len);

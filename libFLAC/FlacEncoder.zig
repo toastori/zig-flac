@@ -1,5 +1,4 @@
 const std = @import("std");
-const option = @import("option");
 const tracy = @import("tracy");
 const metadata = @import("metadata.zig");
 const rice_code = @import("rice_code.zig");
@@ -9,8 +8,13 @@ const MultiChannelIter = @import("sample_iter.zig").MultiChannelIter;
 const SingleChannelIter = @import("sample_iter.zig").SingleChannelIter;
 const SampleIter = @import("sample_iter.zig").SampleIter;
 
-pub const BufferedWriter = std.io.BufferedWriter(option.buffer_size, std.fs.File.Writer);
-pub const FileWriter = BufferedWriter.Writer;
+// -- Constants --
+
+/// Amount of bytes to skip when skipping Header
+/// so you can seek to 0 and write it after calculating
+/// MD5 checksums
+// Skip fLaC(4) + BlockHeader(1) + BlockLength(3) + Streaminfo(34)
+pub const HEADER_SIZE = 4 + 1 + 3 + 34;
 
 // -- Members --
 
@@ -25,16 +29,13 @@ max_fixed_rice_order: u8 = 8,
 max_lpc_rice_order: u8 = 8,
 
 // Context
-file: std.fs.File,
-buffered_writer: BufferedWriter,
+writer: std.io.AnyWriter,
 
 // -- Initializer --
 
-pub fn init(filename: []const u8) !@This() {
-    const file = try std.fs.cwd().createFile(filename, .{});
+pub fn init(writer: std.io.AnyWriter) !@This() {
     return .{
-        .file = file,
-        .buffered_writer = .{ .unbuffered_writer = file.writer() },
+        .writer = writer,
     };
 }
 
@@ -55,7 +56,7 @@ pub fn writeFrame(
 
     std.debug.assert(blk_size != 0);
 
-    var fwriter = @import("FrameWriter.zig").init(self.buffered_writer.writer().any());
+    var fwriter = @import("FrameWriter.zig").init(self.writer);
 
     // Write header start
     try fwriter.writeHeader(
@@ -166,37 +167,38 @@ fn chooseSubframeEncoding(
     return subframe_type;
 }
 
-/// Skip signature and Streaminfo
-pub fn skipHeader(self: *@This()) std.fs.File.SeekError!void {
+/// Skip signature and Streaminfo by writing 0s \
+/// Expect file cursor at 0 \
+/// Might be faster than `file.seekTo` while saving a syscall?
+pub fn skipHeader(self: *@This()) !void {
     // Skip fLaC(4) + BlockHeader(1) + BlockLength(3) + Streaminfo(34)
-    try self.file.seekTo(4 + 1 + 3 + 34);
+    try self.writer.writeByteNTimes(0, HEADER_SIZE);
 }
 
-/// Write Signature and Streaminfo
-pub fn writeHeader(self: *@This(), streaminfo: metadata.StreamInfo, streaminfo_is_last: bool) FileWriter.Error!void {
-    const writer = self.buffered_writer.writer();
+/// Write Signature and Streaminfo \
+/// Expect file cursor at 0
+pub fn writeHeader(self: *@This(), streaminfo: metadata.StreamInfo, is_last_metadata: bool) !void {
     // Write Signature
-    try writer.writeAll("fLaC");
+    try self.writer.writeAll("fLaC");
 
     // Write Streaminfo Block Header
-    try writer.writeStruct(metadata.BlockHeader{ .is_last_block = streaminfo_is_last, .block_type = .StreamInfo });
-    try writer.writeInt(u24, 34, .big); // bytes of metadata block
+    try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .StreamInfo });
+    try self.writer.writeInt(u24, 34, .big); // bytes of metadata block
     // Write Streaminfo Metadata
-    try writer.writeAll(&streaminfo.bytes());
+    try self.writer.writeAll(&streaminfo.bytes());
 }
 
 /// Write Vendor and Vorbis Comments
-pub fn writeVorbisComment(self: *@This(), is_last_metadata: bool) FileWriter.Error!void {
+pub fn writeVorbisComment(self: *@This(), is_last_metadata: bool) !void {
     const vendor: []const u8 = "toastori FLAC 0.0.0";
-    const writer = self.buffered_writer.writer();
     // Write VorbisComment Block Header
-    try writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .VorbisComment });
-    try writer.writeInt(u24, @intCast(vendor.len + 8), .big); // vendor len + vendor_len len(4) + tags_len len(4)
+    try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .VorbisComment });
+    try self.writer.writeInt(u24, @intCast(vendor.len + 8), .big); // vendor len + vendor_len len(4) + tags_len len(4)
     // Write vendor string
-    try writer.writeInt(u32, @intCast(vendor.len), .little);
-    try writer.writeAll(vendor);
+    try self.writer.writeInt(u32, @intCast(vendor.len), .little);
+    try self.writer.writeAll(vendor);
     // Write comments
-    try writer.writeInt(u32, 0, .little); // tags len (4 bytes) (no tag now)
+    try self.writer.writeInt(u32, 0, .little); // tags len (4 bytes) (no tag now)
 }
 
 // -- Types --

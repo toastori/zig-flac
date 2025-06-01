@@ -4,13 +4,16 @@ const tracy = @import("tracy");
 const mode = @import("builtin").mode;
 
 const LEN_PER_CHANNEL = std.math.maxInt(u16);
+const SIZE_PER_CHANNEL = LEN_PER_CHANNEL + 1;
 
 /// Iterator of multiple channel (for writing)
 /// implemented in circular buffer \
+/// Can store 65535 samples with `fnFill`, but the buffer len is
+/// 65536 for convinience \
 /// Call `singleChannelIter()` for single channel reading iterator
 pub const MultiChannelIter = struct {
-    /// Slice of allocated buffer
-    big_samples: []i32,
+    /// Ptr to allocated buffer
+    big_samples: [*]i32,
     /// Channel separated samples in queue \
     /// Since flac's max channel count is 8,
     /// an array of 8 slice saved an allocation while sacrificing very little memory
@@ -19,30 +22,29 @@ pub const MultiChannelIter = struct {
     start: u16 = 0,
     /// Length of queue
     len: u16 = 0,
-
-    /// Debug Only: Channel count (for assert)
-    channel_count: if (mode == .Debug) u8 else void,
+    /// Channels count
+    channels: u8,
 
     pub fn init(allocator: std.mem.Allocator, channels_count: u8) !@This() {
         std.debug.assert(channels_count <= 8);
 
-        const big_samples: []i32 = try allocator.alloc(i32, (LEN_PER_CHANNEL + 1) * @as(usize, channels_count));
+        const big_samples: []i32 = try allocator.alloc(i32, SIZE_PER_CHANNEL * @as(usize, channels_count));
         var channel_samples: [8][*]i32 = undefined;
-        for (0..channels_count) |i| channel_samples[i] = big_samples[i * (LEN_PER_CHANNEL + 1) ..][0..(LEN_PER_CHANNEL + 1)].ptr;
+        for (0..channels_count) |i| channel_samples[i] = big_samples[i * SIZE_PER_CHANNEL..].ptr;
         return .{
-            .big_samples = big_samples,
+            .big_samples = big_samples.ptr,
             .channel_samples = channel_samples,
-            .channel_count = if (mode == .Debug) channels_count else {},
+            .channels = channels_count,
         };
     }
 
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.big_samples);
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.big_samples[0..SIZE_PER_CHANNEL * @as(usize, self.channels)]);
     }
 
-    /// Return `SingleChannelIter` for specified channel
+    /// Get `SingleChannelIter` for specified channel
     pub fn singleChannelIter(self: @This(), channel: u8, len: u16) SingleChannelIter {
-        if (mode == .Debug) std.debug.assert(channel < self.channel_count);
+        if (mode == .Debug) std.debug.assert(channel < self.channels);
 
         std.debug.assert(len <= self.len);
 
@@ -54,9 +56,11 @@ pub const MultiChannelIter = struct {
     }
 
     /// Supply a slice of samples with length of channels count \
-    /// return true if there are still space in the iterator to fill
+    /// Not that performant \
+    /// return:
+    /// - `true` if there are still space in the iterator to fill
     pub fn addInterleavedSample(self: *@This(), samples: []i32) bool {
-        std.debug.assert(if (mode == .Debug) samples.len == self.channel_count else true);
+        std.debug.assert(samples.len == self.channels);
         for (samples, 0..) |sample, ch| {
             self.channel_samples[ch][self.start +% self.len] = sample;
         }
@@ -67,10 +71,11 @@ pub const MultiChannelIter = struct {
     /// Fill the iterator with contineously calling `nextFn(nextFn_args...)` \
     /// Expect the return type of `nextFn` be !?iN or ?iN while N <= 32 (eg !?i32) \
     /// \
-    /// Error return by `nextFn` will be returned for the caller to catch manually
+    /// return:
+    /// - `error.IncompleteStream` when `nextFn` cannot fill all channels of a sample
+    /// - `Error of nextFn` will be returned for the caller to catch manually
     pub fn iterFill(
         self: *@This(),
-        channels_count: u8,
         comptime nextFn: anytype,
         nextFn_args: anytype,
     ) !void {
@@ -104,17 +109,14 @@ pub const MultiChannelIter = struct {
         const tracy_zone = tracy.beginZone(@src(), .{ .name = "MultiSampleIter.wavFill" });
         defer tracy_zone.end();
 
-        if (mode == .Debug) std.debug.assert(self.channel_count == self.channel_count);
-
         while (self.len < LEN_PER_CHANNEL) : (self.len += 1) {
-            for (self.channel_samples[0..channels_count]) |ch| {
+            for (self.channel_samples[0..self.channels]) |ch| {
                 const sample_1 = @call(.auto, nextFn, nextFn_args);
                 const sample_2 = if (comptime !IS_ERROR) sample_1 else try sample_1;
                 const sample: i32 = if (comptime !IS_OPTIONAL) sample_2 else sample_2 orelse {
-                    if (@intFromPtr(ch) != @intFromPtr(self.big_samples.ptr)) { // not the first channel
+                    if (@intFromPtr(ch) != @intFromPtr(self.big_samples)) { // not the first channel
                         @branchHint(.unlikely);
-                        std.log.err("input: incomplete stream", .{});
-                        std.process.exit(3);
+                        return FillSampleError.IncompleteStream;
                     }
                     return;
                 };
@@ -125,9 +127,11 @@ pub const MultiChannelIter = struct {
 
     /// Advance the `start` ptr by `amount` \
     /// Pop the first `amount` of samples from the iterator
-    /// to leave spaces for new samples
+    /// to leave spaces for new samples \
+    /// Expects `amount <= self.len`
     pub fn advanceStart(self: *@This(), amount: u16) void {
         std.debug.assert(amount <= LEN_PER_CHANNEL);
+        std.debug.assert(amount <= self.len);
 
         self.start = self.start +% amount;
         self.len -= amount;
@@ -410,6 +414,10 @@ pub const ResidualIter = struct {
 };
 
 // -- Error --
+
+const FillSampleError = error {
+    IncompleteStream,
+};
 
 const ResidualRangeError = error{
     /// When residual > maxInt(i32) or <= minInt(i32)

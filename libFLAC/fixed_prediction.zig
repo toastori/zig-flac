@@ -61,5 +61,5 @@ pub fn bestOrder(
 
     const best_order: u8 = @intCast(std.mem.indexOfMin(u64, &total_error));
 
-    return if (!check_range and best_order < std.math.maxInt(u49)) best_order else null;
+    return if (!check_range and total_error[best_order] < std.math.maxInt(u49)) best_order else null;
 }

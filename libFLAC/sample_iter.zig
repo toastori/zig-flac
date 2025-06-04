@@ -30,7 +30,7 @@ pub const MultiChannelIter = struct {
 
         const big_samples: []i32 = try allocator.alloc(i32, SIZE_PER_CHANNEL * @as(usize, channels_count));
         var channel_samples: [8][*]i32 = undefined;
-        for (0..channels_count) |i| channel_samples[i] = big_samples[i * SIZE_PER_CHANNEL..].ptr;
+        for (0..channels_count) |i| channel_samples[i] = big_samples[i * SIZE_PER_CHANNEL ..].ptr;
         return .{
             .big_samples = big_samples.ptr,
             .channel_samples = channel_samples,
@@ -39,7 +39,7 @@ pub const MultiChannelIter = struct {
     }
 
     pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.big_samples[0..SIZE_PER_CHANNEL * @as(usize, self.channels)]);
+        allocator.free(self.big_samples[0 .. SIZE_PER_CHANNEL * @as(usize, self.channels)]);
     }
 
     /// Get `SingleChannelIter` for specified channel
@@ -50,6 +50,26 @@ pub const MultiChannelIter = struct {
 
         return .{
             .samples = self.channel_samples[channel],
+            .start = self.start,
+            .len = len,
+        };
+    }
+
+    /// Get `MidChannelIter` in stareo mode
+    pub fn midChannelIter(self: @This(), len: u16) MidChannelIter {
+        return .{
+            .left = self.channel_samples[0],
+            .right = self.channel_samples[1],
+            .start = self.start,
+            .len = len,
+        };
+    }
+
+    /// Get `SideChannelIter` in stareo mode
+    pub fn sideChannelIter(self: @This(), SampleT: type, len: u16) SideChannelIter(SampleT) {
+        return .{
+            .left = self.channel_samples[0],
+            .right = self.channel_samples[1],
             .start = self.start,
             .len = len,
         };
@@ -142,7 +162,7 @@ pub const MultiChannelIter = struct {
 pub const SingleChannelIter = struct {
     /// Reference of samples from MultiChannelIter
     samples: [*]i32,
-    /// Head pointer of the queue
+    /// Head ptr of the queue
     start: u16,
     /// Length of the queue
     len: u16,
@@ -176,6 +196,93 @@ pub const SingleChannelIter = struct {
         self.idx = 0;
     }
 };
+
+pub const MidChannelIter = struct {
+    /// Reference of samples from MultiChannelIter
+    left: [*]i32,
+    /// Reference of samples from MultiChannelIter
+    right: [*]i32,
+    /// Head ptr of the queue
+    start: u16,
+    /// Length of the queue
+    len: u16,
+    /// Index of progress
+    idx: u16 = 0,
+
+    /// Get generic sample iterator
+    pub fn sampleIter(self: *@This()) SampleIter(i32) {
+        return SampleIter(i32).init(
+            @This(),
+            self,
+            next,
+            peek,
+            reset,
+            self.len,
+        );
+    }
+
+    pub fn next(self: *@This()) ?i32 {
+        const sample = self.peek();
+        if (sample != null) self.idx += 1;
+        return sample;
+    }
+
+    pub fn peek(self: @This()) ?i32 {
+        if (self.idx == self.len) return null;
+        const left = self.left[self.start +% self.idx];
+        const right = self.right[self.start +% self.idx];
+        return (left + right) >> 1;
+    }
+
+    pub fn reset(self: *@This()) void {
+        self.idx = 0;
+    }
+};
+
+pub fn SideChannelIter(SampleT: type) type {
+    std.debug.assert(SampleT == i32 or SampleT == i64);
+    return struct {
+        /// Reference of samples from MultiChannelIter
+        left: [*]i32,
+        /// Reference of samples from MultiChannelIter
+        right: [*]i32,
+        /// Head ptr of the queue
+        start: u16,
+        /// Length of the queue
+        len: u16,
+        /// Index of progress
+        idx: u16 = 0,
+
+        /// Get generic sample iterator
+        pub fn sampleIter(self: *@This()) SampleIter(SampleT) {
+            return SampleIter(SampleT).init(
+                @This(),
+                self,
+                next,
+                peek,
+                reset,
+                self.len,
+            );
+        }
+
+        pub fn next(self: *@This()) ?SampleT {
+            const sample = self.peek();
+            if (sample != null) self.idx += 1;
+            return sample;
+        }
+
+        pub fn peek(self: @This()) ?SampleT {
+            if (self.idx == self.len) return null;
+            const left: SampleT = self.left[self.start +% self.idx];
+            const right: SampleT = self.right[self.start +% self.idx];
+            return left - right;
+        }
+
+        pub fn reset(self: *@This()) void {
+            self.idx = 0;
+        }
+    };
+}
 
 /// Read residuals after FixedPrediction \
 /// Residual range unchecked, should be checked while
@@ -238,9 +345,9 @@ pub fn MultiOrderFixedResidualIter(SampleT: type) type {
                     const sample = iterator.next().?;
                     result[0] += @abs(sample);
                     for (1..iteration + 1) |order|
-                    result[order] += @abs(fp.calcResidual(sample, result_iter.prev_samples, order));
+                        result[order] += @abs(fp.calcResidual(sample, result_iter.prev_samples, order));
                     result_iter.prev_samples =
-                    std.simd.shiftElementsRight(result_iter.prev_samples, 1, sample);
+                        std.simd.shiftElementsRight(result_iter.prev_samples, 1, sample);
                 }
             } else {
                 for (0..fp.MAX_ORDER) |iteration| {
@@ -248,16 +355,18 @@ pub fn MultiOrderFixedResidualIter(SampleT: type) type {
 
                     if (fp.inRange(sample))
                         result[0] += @abs(sample)
-                    else result[0] = std.math.maxInt(u49);
+                    else
+                        result[0] = std.math.maxInt(u49);
 
                     for (1..iteration + 1) |order| {
                         const residual = fp.calcResidual(sample, result_iter.prev_samples, order);
                         if (fp.inRange(residual))
                             result[order] += @abs(residual)
-                        else result[order] = std.math.maxInt(u49);
+                        else
+                            result[order] = std.math.maxInt(u49);
                     }
                     result_iter.prev_samples =
-                    std.simd.shiftElementsRight(result_iter.prev_samples, 1, sample);
+                        std.simd.shiftElementsRight(result_iter.prev_samples, 1, sample);
                 }
             }
 
@@ -360,7 +469,7 @@ pub fn SampleIter(SampleT: type) type {
 
         /// Peek next sample WITHOUT incrementing idx
         pub fn peek(self: @This()) ?SampleT {
-            return self.peekFn(self.iterator.*);
+            return self.peekFn(self.iterator);
         }
 
         pub fn reset(self: @This()) void {
@@ -415,7 +524,7 @@ pub const ResidualIter = struct {
 
 // -- Error --
 
-const FillSampleError = error {
+const FillSampleError = error{
     IncompleteStream,
 };
 

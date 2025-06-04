@@ -24,9 +24,7 @@ bytes_written: u24 = 0,
 // -- Initializer --
 
 pub fn init(writer: std.io.AnyWriter) @This() {
-    return .{
-        .writer = writer,
-    };
+    return .{ .writer = writer };
 }
 
 // -- Methods --
@@ -43,14 +41,13 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
         self.buffer <<= if (builtin.mode == .Debug) @truncate(remain_bits) else @intCast(remain_bits);
         self.buffer |= value >> @intCast(size - remain_bits);
 
-        self.calcCrc(calc_crc, &std.mem.toBytes(std.mem.nativeToBig(u64, self.buffer)));
-        try self.writer.writeInt(u64, self.buffer, .big);
-        self.buffer_len = 0;
+        self.buffer = std.mem.nativeToBig(u64, self.buffer);
+        self.calcCrc(calc_crc, std.mem.asBytes(&self.buffer));
+        try self.writer.writeInt(u64, self.buffer, builtin.cpu.arch.endian());
 
         self.buffer_len = @intCast(size - remain_bits);
         self.buffer = value;
     } else {
-        @branchHint(.likely);
         self.buffer <<= @intCast(size);
         self.buffer |= value;
         self.buffer_len += @intCast(size);
@@ -66,9 +63,9 @@ pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64, comptime ca
 /// Flush remaining bits and align it to a byte
 pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) !void {
     var len = self.buffer_len;
+    self.bytes_written += (@as(u8, len) + 7) / 8;
     self.buffer_len = 0;
 
-    self.bytes_written += len + 7 / 8;
     while (len >= 8) {
         len -= 8;
         const byte: u8 = @truncate(self.buffer >> len);
@@ -85,19 +82,19 @@ pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) !void {
 /// Write Crc8 in frame header \
 /// Make sure to call `flushByte()` before this
 pub inline fn writeCrc8(self: *@This()) !void {
+    self.bytes_written += 1;
+
     const value = self.crc8.final();
     self.calcCrc(.only16, &std.mem.toBytes(value));
-    try self.writer.writeInt(u8, value, .little);
-
-    self.bytes_written += 1;
+    try self.writer.writeInt(u8, value, builtin.cpu.arch.endian());
 }
 
 /// Write Crc16 in frame footer \
 /// Make sure to call `flushByte()` before this
 pub inline fn writeCrc16(self: *@This()) !void {
-    try self.writer.writeInt(u16, self.crc16.final(), .big);
-
     self.bytes_written += 2;
+
+    try self.writer.writeInt(u16, self.crc16.final(), .big);
 }
 
 /// Write frame header
@@ -190,13 +187,13 @@ pub fn writeHeader(
         std.debug.assert(frame_sample_number <= 0x000f_ffff_ffff);
         var buffer: u56 = 0;
         var i: u6 = 0;
-        var first_byte_max: usize = 0b11111;
+        var first_byte_max: usize = 0b111111;
         var number = frame_sample_number;
         while (number > first_byte_max) { // 0x10xxxxxx
-            buffer |= (0b10000000 + (number & 0b111111)) << (8 * i);
+            buffer |= (0b1000_0000 + (number & 0b111111)) << (8 * i);
             i += 1;
             number >>= 6;
-            first_byte_max >>= 1; // --endian, --sign, --channels, --bps, and --sample-rate
+            first_byte_max >>= 1;
         }
         buffer |= ((@as(u56, 0b11111110) << (6 - i)) | number) << (8 * i); // first byte
         try self.writeBitsWrapped(8 * (i + 1), buffer, .both);
@@ -253,6 +250,9 @@ pub fn writeFixedSubframe(
     const tracy_zone = tracy.beginZone(@src(), .{ .name = "FrameWriter.writeFixedSubframe" });
     defer tracy_zone.end();
 
+    const param_len: u6 = @intFromEnum(rice_config.method) + 4;
+    const part_count = @as(usize, 1) << rice_config.part_order;
+
     // Bug writing subframe header?
     try self.writeBits(8, (8 | order) << 1, .only16); // N-th order Fixed coding
 
@@ -264,9 +264,6 @@ pub fn writeFixedSubframe(
     // Rice code with N nits param(2) + Partition order(4)
     try self.writeBits(2 + 4, (@intFromEnum(rice_config.method) << 4) | rice_config.part_order, .only16);
 
-    const part_count = @as(usize, 1) << rice_config.part_order;
-    const param_len: u6 = @intCast(@intFromEnum(rice_config.method) + 4);
-
     // Write Rice codes
     var remain_residuals = residuals[order..];
     var part_size = (residuals.len >> rice_config.part_order) - order;
@@ -276,26 +273,27 @@ pub fn writeFixedSubframe(
 
         const part_residuals = remain_residuals[0..part_size];
 
-        if (param == rice_code.MAX_PARAM) { // Escaped
+        if (param == rice_code.ESC_PART) { // Escaped
             // Tracy
             const tracy_zone_escaped = tracy.beginZone(@src(), .{ .name = "writeEscaped" });
             defer tracy_zone_escaped.end();
 
             // Calc minimum bits to store the numbers
-            var min_digits: u6 = 0;
-            for (part_residuals) |r| {
-                const digits: u6 = (sample_size - @as(u6, @intCast(@clz(@abs(r))))) + 1;
-                if (digits > min_digits) min_digits = digits;
-            }
-            try self.writeBits(5, min_digits, .only16);
-            for (part_residuals) |r| {
-                try self.writeBits(min_digits, @as(u32, @bitCast(r)), .only16);
-            }
+            // var min_digits: u6 = 0;
+            // for (part_residuals) |r| {
+            //     const digits: u6 = 32 - @as(u6, @intCast(@clz(@abs(r)))) + 1;
+            //     if (digits > min_digits) min_digits = digits;
+            // }
+            // try self.writeBits(5, min_digits, .only16);
+            // for (part_residuals) |r| {
+            //     try self.writeBits(min_digits, @as(u32, @bitCast(r)), .only16);
+            // }
 
-            // Tracy
-            tracy_zone_escaped.value(min_digits);
+            // Currently is just 0
+            try self.writeBits(5, 0, .only16);
+
+            std.debug.print("ESCAPE!!!\n", .{});
         } else { // Normal
-            @branchHint(.likely);
             // Tracy
             const tracy_zone_rice = tracy.beginZone(@src(), .{ .name = "writeRices" });
             defer tracy_zone_rice.end();

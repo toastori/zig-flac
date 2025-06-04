@@ -1,7 +1,8 @@
 const std = @import("std");
 const tracy = @import("tracy");
+const endian = @import("builtin").cpu.arch.endian();
 
-const BLOCK_SIZE = 4096;
+const BLOCK_SIZE = @import("option").frame_size;
 
 const FlacStreaminfo = @import("flac").metadata.StreamInfo;
 
@@ -33,8 +34,11 @@ pub inline fn init(reader: std.io.AnyReader) !@This() {
 // -- Methods --
 
 /// Get next sample \
-/// Samples are read as bit extended `i32`
-pub fn nextSample(self: *@This()) ?i32 {
+/// \
+/// return:
+/// - bit extended `i32`
+/// - `null` when no more samples
+pub fn nextSample(self: @This()) ?i32 {
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
 
     var sample: i32 = undefined;
@@ -50,8 +54,11 @@ pub fn nextSample(self: *@This()) ?i32 {
 }
 
 /// Get next sample and update MD5 \
-/// Samples are read as bit extended `i32`
-pub fn nextSampleMd5(self: *@This(), md5: *std.crypto.hash.Md5) ?i32 {
+/// \
+/// return:
+/// - bit extended `i32`
+/// - `null` when no more samples
+pub fn nextSampleMd5(self: @This(), md5: *std.crypto.hash.Md5) ?i32 {
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
 
     var sample: i32 = undefined;
@@ -67,7 +74,55 @@ pub fn nextSampleMd5(self: *@This(), md5: *std.crypto.hash.Md5) ?i32 {
     return sample;
 }
 
-/// Return null when flac unsupported format
+/// Fill dest with `samples` amount of samples on each channels
+/// or less when reached end of stream \
+/// Length of dest's referenced slice might be modified end of stream \
+/// \
+/// return:
+/// - `dest` for easier to work with, since its length might be modified
+/// - `null` when no samples to read
+/// - `StreamError.IncompleteStream` when bytes of sample does not fill up all bytes of all channels
+pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32, md5: *std.crypto.hash.Md5) !?[][]i32 {
+    std.debug.assert(dest[0].len >= samples);
+    std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
+    const shift_amt: u5 = @intCast(32 - self.bit_depth);
+    var buf = buffer;
+
+    const bytes_read = try self.reader.readAll(buffer[0..samples * self.bytes_per_sample * self.channels]);
+    if (bytes_read == 0) {
+        return null;
+    } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0)
+        return StreamError.IncompleteStream;
+    const bytes = buffer[0..bytes_read];
+    const samples_read = bytes_read / (self.bytes_per_sample * self.channels);
+    md5.update(bytes);
+
+    for (0..samples_read) |i| {
+        for (dest) |channel| {
+            var sample: i32 = undefined;
+            const sample_bytes: []u8 = std.mem.asBytes(&sample)[4-self.bytes_per_sample..];
+            @memcpy(sample_bytes, buf[0..self.bytes_per_sample]);
+            sample = std.mem.littleToNative(i32, sample);
+            // unsigned to signed
+            if (self.bytes_per_sample == 1)
+                sample -= @as(i32, 128) >> @intCast(8 - self.bit_depth);
+            // sign extend
+            sample >>= shift_amt;
+
+            channel[i] = sample;
+            buf = buf[self.bytes_per_sample..];
+        }
+    }
+
+    const result = dest;
+    for (result) |*channel| {
+        channel.* = channel.*[0..samples_read];
+    }
+    return result;
+}
+
+/// return: \
+/// - `null` when flac unsupported format
 pub fn flacStreaminfo(self: @This()) ?FlacStreaminfo {
     if (self.bit_depth < 4 or self.bit_depth > 32 or
         self.channels == 0 or self.channels > 8 or
@@ -85,7 +140,10 @@ pub fn flacStreaminfo(self: @This()) ?FlacStreaminfo {
 }
 
 /// Read WAV file header and return Flac metadata.Streaminfo without MD5 \
-/// Assume file pointer is at the start of the file
+/// Assume file pointer is at the start of the file \
+/// \
+/// return: \
+/// - `EofError` while reading file (possibly)
 fn getFmt(self: *@This()) !void {
     // Tracy
     const tracy_zone = tracy.beginZone(@src(), .{ .name = "WavReader.readIntoFlacStreaminfo" });
@@ -163,6 +221,7 @@ pub const EncodingError = error{
 };
 
 pub const StreamError = error{
-    // When `sample_count % channel_count != 0`
+    /// When `sample_count % channels != 0` or
+    /// `bytes_count % (bytes_per_sample * channels) != 0`
     IncompleteStream,
 };

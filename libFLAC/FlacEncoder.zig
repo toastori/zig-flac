@@ -1,13 +1,15 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const tracy = @import("tracy");
 const metadata = @import("metadata.zig");
+const samples_fn = @import("samples.zig");
 const rice_code = @import("rice_code.zig");
 const fixed_prediction = @import("fixed_prediction.zig");
 
 const FrameWriter = @import("FrameWriter.zig");
-const MultiChannelIter = @import("sample_iter.zig").MultiChannelIter;
-const SingleChannelIter = @import("sample_iter.zig").SingleChannelIter;
-const SampleIter = @import("sample_iter.zig").SampleIter;
+const MultiChannelIter = @import("samples.zig").MultiChannelIter;
+const SingleChannelIter = @import("samples.zig").SingleChannelIter;
+const SampleIter = @import("samples.zig").SampleIter;
 
 // -- Constants --
 
@@ -36,12 +38,33 @@ max_lpc_rice_order: u8 = 8,
 // Context
 writer: std.io.AnyWriter,
 
+mid_samples: [*]i32 = undefined,
+side_samples: [*]i32 = undefined,
+side_samples_wide: [*]i64 = undefined,
+max_frame_size: usize = undefined,
+
 // -- Initializer --
 
-pub fn init(writer: std.io.AnyWriter) !@This() {
-    return .{
-        .writer = writer,
-    };
+/// Allocate for `mid_samples`, `side_samples` and `side_samples_wide`
+pub fn initSamples(self: *@This(), allocator: std.mem.Allocator, bit_depth: u6, max_frame_size: usize) !void {
+    self.max_frame_size = max_frame_size;
+    if (self.stereo == .indep) return;
+    self.mid_samples = (try allocator.alloc(i32, max_frame_size)).ptr;
+    errdefer allocator.free(self.mid_samples[0..self.max_frame_size]);
+    if (bit_depth < 32)
+        self.side_samples = (try allocator.alloc(i32, max_frame_size)).ptr
+    else
+        self.side_samples_wide =  (try allocator.alloc(i64, max_frame_size)).ptr;
+}
+
+/// Clean up allocated slices
+pub fn deinit(self: @This(), allocator: std.mem.Allocator, bit_depth: u6) void {
+    if (self.stereo == .indep) return;
+    allocator.free(self.mid_samples[0..self.max_frame_size]);
+    if (bit_depth < 32)
+        allocator.free(self.side_samples[0..self.max_frame_size])
+    else
+        allocator.free(self.side_samples_wide[0..self.max_frame_size]);
 }
 
 // -- Methods --
@@ -54,68 +77,87 @@ pub fn init(writer: std.io.AnyWriter) !@This() {
 pub fn writeFrame(
     self: *@This(),
     allocator: std.mem.Allocator,
-    samples_iter: MultiChannelIter,
+    samples: []const []const i32,
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
-    frame_size: u16,
 ) !u24 {
     // Tracy
     const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.writeFrame" });
     defer tracy_zone.end();
 
-    std.debug.assert(frame_size != 0);
-    std.debug.assert(samples_iter.len != 0);
+    std.debug.assert(samples.len != 0 and samples[0].len != 0);
+    if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
+        for (0..samples.len - 1) |i|
+            std.debug.assert(samples[i].len == samples[i + 1].len);
+    }
 
     var fwriter: FrameWriter = .init(self.writer);
 
-    const stereo_mode: StereoType = if (streaminfo.channels == 2 and self.stereo != .indep)
-        chooseStereoMethod(samples_iter, frame_size)
+    const frame_size: u16 = @intCast(samples[0].len);
+    const stereo_mode: StereoType = if (samples.len == 2 and self.stereo != .indep)
+        chooseStereoMethod(samples, frame_size)
     else
         .LeftRight;
+
+    const mid, const side, const side_wide = switch (stereo_mode) {
+        .LeftRight => .{undefined, undefined, undefined},
+        .MidSide => blk: {
+            if (streaminfo.bit_depth == 32) {
+                const m, const s = samples_fn.midSideChannels(i64, samples[0], samples[1], self.mid_samples[0..self.max_frame_size], self.side_samples_wide[0..self.max_frame_size]);
+                break :blk .{m, undefined, s};
+            } else {
+                const m, const s = samples_fn.midSideChannels(i32, samples[0], samples[1], self.mid_samples[0..self.max_frame_size], self.side_samples[0..self.max_frame_size]);
+                break :blk .{m, s, undefined};
+            }
+        },
+        else => blk: {
+            if (streaminfo.bit_depth == 32) {
+                const s = samples_fn.sideChannel(i64, samples[0], samples[1], self.side_samples_wide[0..self.max_frame_size]);
+                break :blk .{undefined, undefined, s};
+            } else {
+                const s = samples_fn.sideChannel(i32, samples[0], samples[1], self.side_samples[0..self.max_frame_size]);
+                break :blk .{undefined, s, undefined};
+            }
+        }
+    };
 
     // Write header start
     try fwriter.writeHeader(
         true,
         frame_size,
-        0,
+        streaminfo.sample_rate,
         if (stereo_mode == .LeftRight)
             .simple(streaminfo.channels)
         else
             @enumFromInt(@intFromEnum(stereo_mode) + 7),
-        0,
+        streaminfo.bit_depth,
         frame_idx,
     );
 
     // Write a subframe per channel
     switch (stereo_mode) {
         .LeftRight => for (0..streaminfo.channels) |i| {
-            var samples = samples_iter.singleChannelIter(@intCast(i), frame_size);
-            try self.writeChannelSubframe(i32,allocator,samples.sampleIter(),&fwriter,streaminfo.bit_depth);
+            try self.writeChannelSubframe(i32, allocator, samples[i], &fwriter, streaminfo.bit_depth);
         },
         .LeftSide => { // Left
-            var samples = samples_iter.singleChannelIter(0, frame_size);
-            try self.writeChannelSubframe(i32,allocator,samples.sampleIter(),&fwriter,streaminfo.bit_depth);
+            try self.writeChannelSubframe(i32, allocator, samples[0], &fwriter, streaminfo.bit_depth);
         },
         .MidSide => { // Mid
-            var samples = samples_iter.midChannelIter(frame_size);
-            try self.writeChannelSubframe(i32,allocator,samples.sampleIter(),&fwriter,streaminfo.bit_depth);
+            try self.writeChannelSubframe(i32, allocator, mid, &fwriter, streaminfo.bit_depth);
         },
         else => {},
     }
 
     if (stereo_mode != .LeftRight) { // Side
         if (streaminfo.bit_depth < 32) {
-            var samples = samples_iter.sideChannelIter(i32, frame_size);
-            try self.writeChannelSubframe(i32,allocator,samples.sampleIter(),&fwriter,streaminfo.bit_depth + 1);
+            try self.writeChannelSubframe(i32, allocator, side, &fwriter, streaminfo.bit_depth + 1);
         } else {
-            var samples = samples_iter.sideChannelIter(i64, frame_size);
-            try self.writeChannelSubframe(i64,allocator,samples.sampleIter(),&fwriter,streaminfo.bit_depth + 1);
+            try self.writeChannelSubframe(i64, allocator, side_wide, &fwriter, streaminfo.bit_depth + 1);
         }
     }
 
     if (stereo_mode == .SideRight) { // Right
-        var samples = samples_iter.singleChannelIter(1, frame_size);
-        try self.writeChannelSubframe(i32,allocator,samples.sampleIter(),&fwriter,streaminfo.bit_depth);
+        try self.writeChannelSubframe(i32, allocator, samples[1], &fwriter, streaminfo.bit_depth);
     }
 
     try fwriter.flushBytes(.only16);
@@ -126,24 +168,25 @@ pub fn writeFrame(
     return fwriter.bytes_written;
 }
 
+/// Write subframe of a channel (any kind: single, mid, side)
 fn writeChannelSubframe(
     self: @This(),
     SampleT: type,
     allocator: std.mem.Allocator,
-    samples: SampleIter(SampleT),
+    samples: []const SampleT,
     fwriter: *FrameWriter,
     sample_size: u6,
 ) !void {
+    std.debug.assert(samples.len != 0);
     const subframe_type = try self.chooseSubframeEncoding(
-    SampleT,
-    allocator,
-    sample_size,
-    samples,
+        SampleT,
+        allocator,
+        sample_size,
+        samples,
     );
 
-    samples.reset();
     switch (subframe_type) {
-        .Constant => try fwriter.writeConstantSubframe(sample_size, samples.peek().?),
+        .Constant => try fwriter.writeConstantSubframe(sample_size, samples[0]),
         .Verbatim => try fwriter.writeVerbatimSubframe(SampleT, sample_size, samples),
         .Fixed => |f| {
             defer allocator.free(f.residuals);
@@ -154,34 +197,41 @@ fn writeChannelSubframe(
 }
 
 // Copy from flake
+/// Evaluate best method to encode Stereo frame \
 /// Channels must be 2
 fn chooseStereoMethod(
-    samples: MultiChannelIter,
+    samples: []const []const i32,
     frame_size: u16,
 ) StereoType {
+    const fp = @import("fixed_prediction.zig");
     // Tracy
     const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.chooseStereoMethod" });
     defer tracy_zone.end();
 
-    std.debug.assert(samples.channels == 2);
+    std.debug.assert(samples.len == 2);
 
     var sum: [4]u64 = .{ 0, 0, 0, 0 };
     const LEFT, const RIGHT, const MID, const SIDE = .{ 0, 1, 2, 3 };
 
-    var left_samples = samples.singleChannelIter(LEFT, frame_size);
-    var right_samples = samples.singleChannelIter(RIGHT, frame_size);
+    const left = samples[0];
+    const right = samples[1];
 
-    var left_preds = left_samples.sampleIter().fixedResidualIter(2).?;
-    var right_preds = right_samples.sampleIter().fixedResidualIter(2).?;
+    var left_prev: @Vector(4, i64) = .{ left[1], left[0], undefined, undefined };
+    var right_prev: @Vector(4, i64) = .{ left[1], right[0], undefined, undefined };
 
-    while (left_preds.next()) |left_tmp| {
-        const left: i64 = left_tmp;
-        const right: i64 = right_preds.next().?;
+    for (2..left.len) |i| {
+        const l: i64 = fp.calcResidual(left[i], left_prev, 2);
+        const r: i64 = fp.calcResidual(right[i], right_prev, 2);
 
-        sum[LEFT] += @abs(left);
-        sum[RIGHT] += @abs(right);
-        sum[MID] += @abs(left + right >> 1);
-        sum[SIDE] += @abs(left - right);
+        sum[LEFT] += @abs(l);
+        sum[RIGHT] += @abs(r);
+        sum[MID] += @abs(l + r >> 1);
+        sum[SIDE] += @abs(l - r);
+
+        left_prev =
+            std.simd.shiftElementsRight(left_prev, 1, left[i]);
+        right_prev =
+            std.simd.shiftElementsRight(right_prev, 1, right[i]);
     }
     for (&sum) |*s| {
         _, const bits = rice_code.findOptimalParamEstimate(2 * s.*, frame_size);
@@ -198,12 +248,13 @@ fn chooseStereoMethod(
     return @enumFromInt(std.mem.indexOfMin(u64, &score));
 }
 
+/// Evaluate best encoding for a subframe
 fn chooseSubframeEncoding(
     self: @This(),
     SampleT: type,
     allocator: std.mem.Allocator,
     sample_size: u8,
-    samples: SampleIter(SampleT),
+    samples: []const SampleT,
 ) !SubframeType {
     // Tracy
     const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.chooseSingleChannelSubframeEncoding" });
@@ -211,8 +262,8 @@ fn chooseSubframeEncoding(
 
     // -- Constant -- (First priority)
     constant: {
-        const first_sample: SampleT = samples.next().?;
-        while (samples.next()) |sample| {
+        const first_sample: SampleT = samples[0];
+        for (samples[1..]) |sample| {
             if (sample != first_sample) break :constant;
         }
         return .{ .Constant = {} };
@@ -225,7 +276,6 @@ fn chooseSubframeEncoding(
     var subframe_type: SubframeType = .{ .Verbatim = {} }; // Default fallback to Verbatim
 
     // -- Fixed Prediction --
-    samples.reset();
     const best_fixed_order = (if (sample_size < 28)
         fixed_prediction.bestOrder(
             SampleT,
@@ -241,15 +291,7 @@ fn chooseSubframeEncoding(
 
     // Prepare residuals
     const residuals = try allocator.alloc(i32, samples.len);
-    samples.reset();
-    var res_iter = samples.fixedResidualIter(best_fixed_order).?;
-    for (1..best_fixed_order + 1) |order| {
-        residuals[order - 1] = @intCast(res_iter.prev_samples[best_fixed_order - order]);
-    }
-    var i: usize = best_fixed_order;
-    while (res_iter.next()) |res| : (i += 1) {
-        residuals[i] = res;
-    }
+    samples_fn.fixedResiduals(SampleT, best_fixed_order, samples, residuals);
 
     const fixed_size, const rice_config = rice_code.calcRiceParamFixed(
         residuals,
@@ -273,15 +315,21 @@ fn chooseSubframeEncoding(
 
 /// Skip signature and Streaminfo by writing 0s \
 /// Expect file cursor at 0 \
-/// Might be faster than `file.seekTo` while saving a syscall?
-pub fn skipHeader(self: *@This()) !void {
+/// Might be faster than `file.seekTo` while saving a syscall? \
+/// \
+/// return:
+/// - `Error` while writing
+pub fn skipHeader(self: @This()) !void {
     // Skip fLaC(4) + BlockHeader(1) + BlockLength(3) + Streaminfo(34)
     try self.writer.writeByteNTimes(0, HEADER_SIZE);
 }
 
 /// Write Signature and Streaminfo \
-/// Expect file cursor at 0
-pub fn writeHeader(self: *@This(), streaminfo: metadata.StreamInfo, is_last_metadata: bool) !void {
+/// Expect file cursor at 0 \
+/// \
+/// return:
+/// - `Error` while writing
+pub fn writeHeader(self: @This(), streaminfo: metadata.StreamInfo, is_last_metadata: bool) !void {
     // Write Signature
     try self.writer.writeAll("fLaC");
 
@@ -292,8 +340,11 @@ pub fn writeHeader(self: *@This(), streaminfo: metadata.StreamInfo, is_last_meta
     try self.writer.writeAll(&streaminfo.bytes());
 }
 
-/// Write Vendor and Vorbis Comments
-pub fn writeVorbisComment(self: *@This(), is_last_metadata: bool) !void {
+/// Write Vendor and Vorbis Comments \
+/// \
+/// return:
+/// - `Error` while writing
+pub fn writeVorbisComment(self: @This(), is_last_metadata: bool) !void {
     const vendor: []const u8 = "toastori FLAC 0.0.0";
     // Write VorbisComment Block Header
     try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .VorbisComment });
@@ -309,11 +360,14 @@ pub fn writeVorbisComment(self: *@This(), is_last_metadata: bool) !void {
 
 pub const Setting = struct {
     pub const LPC = enum {
-        none, fixed, // TODO
+        none,
+        fixed, // TODO
     };
 
     pub const Stereo = enum {
-        indep, mid_side, auto,
+        indep,
+        mid_side,
+        auto,
     };
 };
 

@@ -4,8 +4,6 @@ const tracy = @import("tracy");
 const metadata = @import("metadata.zig");
 const rice_code = @import("rice_code.zig");
 
-const SingleChannelIter = @import("sample_iter.zig").SingleChannelIter;
-const SampleIter = @import("sample_iter.zig").SampleIter;
 const RiceCode = rice_code.RiceCode;
 const RiceConfig = rice_code.RiceConfig;
 
@@ -228,12 +226,12 @@ pub fn writeVerbatimSubframe(
     self: *@This(),
     SampleT: type,
     sample_size: u6,
-    samples: SampleIter(SampleT),
+    samples: []const SampleT,
 ) !void {
     // Subframe Header: SyncBit[0](1) + Verbatim Coding[000001](6) + WastedBits[0](1)
     try self.writeBits(8, 1 << 1, .only16);
 
-    while (samples.next()) |sample| {
+    for (samples) |sample| {
         const sample_u: std.meta.Int(.unsigned, @bitSizeOf(SampleT)) = @bitCast(sample);
         try self.writeBitsWrapped(sample_size, sample_u, .only16);
     }

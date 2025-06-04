@@ -1,6 +1,6 @@
 const std = @import("std");
 const tracy = @import("tracy");
-const sample_iter = @import("sample_iter.zig");
+const sample_iter = @import("samples.zig");
 
 const SampleIter = sample_iter.SampleIter;
 const MultiOrderFixedResidualIter = sample_iter.MultiOrderFixedResidualIter;
@@ -19,25 +19,21 @@ pub const COEFFICIENTS = [_]@Vector(4, i64){
 
 // -- Functions --
 
+/// Calculate prediction residuals
 pub fn calcResidual(sample: i64, prev_samples: @Vector(4, i64), order: usize) i64 {
     const prediction: i64 = @reduce(.Add, prev_samples * COEFFICIENTS[order]);
     return sample - prediction;
 }
 
-pub fn inRange(num: i64) bool {
+/// Check if the residual is in range
+pub inline fn inRange(num: i64) bool {
     return num <= std.math.maxInt(i32) or num > std.math.minInt(i32);
 }
-
-/// Remember to free the residuals slice
-pub const OrderAndResiduals = struct {
-    order: u8,
-    residuals: []i32,
-};
 
 /// Find the best fixed prediction order by looking for smallest residuals sum
 pub fn bestOrder(
     SampleT: type,
-    samples: SampleIter(SampleT),
+    samples: []const SampleT,
     comptime check_range: bool,
 ) ?u8 {
     // Tracy

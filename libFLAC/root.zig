@@ -1,5 +1,5 @@
 // -- Private import --
-const sample_iter = @import("sample_iter.zig");
+const sample_iter = @import("samples.zig");
 
 // -- Package --
 

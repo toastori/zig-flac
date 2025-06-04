@@ -1,6 +1,6 @@
 const std = @import("std");
 const tracy = @import("tracy");
-const sample_iter = @import("sample_iter.zig");
+const sample_iter = @import("samples.zig");
 const FixedResidualIter = sample_iter.FixedResidualIter;
 
 const MAX_PARAM_4BIT = std.math.maxInt(u4) - 1;

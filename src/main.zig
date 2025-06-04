@@ -40,12 +40,12 @@ fn encodeFile(allocator: std.mem.Allocator, input: []const u8, output: []const u
     defer in_file.close();
     var buffered_reader: BufferedReader = .{ .unbuffered_reader = in_file.reader() };
 
-    var wav = try @import("WavReader.zig").init(buffered_reader.reader().any());
+    const wav = try @import("WavReader.zig").init(buffered_reader.reader().any());
 
     var streaminfo = wav.flacStreaminfo() orelse {
         std.log.err("format: flac does not support this wav format", .{});
         std.process.exit(2);
     }; // Flac unsupported format
 
-    try wav2flac.main(output, allocator, &streaminfo, &wav);
+    try wav2flac.main(output, allocator, &streaminfo, wav);
 }

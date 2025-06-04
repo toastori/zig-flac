@@ -8,7 +8,9 @@ pub fn build(b: *std.Build) void {
     // Define Options
     const option = b.addOptions();
     const d_buffer_size = b.option(usize, "buffer_size", "Set buffer size of reader and writer (default: 4096)") orelse 4096;
+    const d_frame_size = b.option(usize, "frame_size", "Set frame size of encoder (default: 4096)") orelse 4096;
     option.addOption(usize, "buffer_size", d_buffer_size);
+    option.addOption(usize, "frame_size", d_frame_size);
 
     const option_mod = option.createModule();
 

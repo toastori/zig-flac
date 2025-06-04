@@ -191,7 +191,7 @@ fn chooseStereoMethod(
     const score: [4]u64 = .{
         sum[LEFT] + sum[RIGHT], // Left Right
         sum[LEFT] + sum[SIDE], // Left Side
-        sum[RIGHT] + sum[SIDE], // Side Right
+        sum[SIDE] + sum[RIGHT], // Side Right
         sum[MID] + sum[SIDE], // Mid Side
     };
 

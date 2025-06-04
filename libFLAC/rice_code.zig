@@ -29,7 +29,7 @@ pub const RiceCode = struct {
 };
 
 pub const RiceConfig = struct {
-    method: enum(u6) { FOUR = 0, FIVE = 1 } = undefined,
+    method: enum(u6) { FOUR = 0, FIVE = 1 } = .FOUR,
     part_order: u6 = undefined,
     params: [MAX_PART]u6 = undefined,
 };
@@ -91,7 +91,6 @@ fn calcRiceParam(
             optimal_config = config;
         }
     }
-    optimal_config.method = if (max_param == MAX_PARAM_4BIT) .FOUR else .FIVE;
 
     return .{ optimal_bit_count, optimal_config };
 }
@@ -158,11 +157,18 @@ fn calcOptimalParams(
     for (0..part_count) |i| {
         const optimal_param, const optimal_bit_count =
             findOptimalParamSearch(sums[i], part_size, max_param);
-        // config.params[i] = if (optimal_param > max_param) max_param else optimal_param;
         config.params[i] = optimal_param;
         all_bits += optimal_bit_count;
 
         part_size = blk_size >> part_order;
+    }
+    // Decide to extend rice method
+    if (max_param == MAX_PARAM) {
+        for (config.params[0..part_count]) |param| {
+            if (param <= MAX_PARAM_4BIT) continue;
+            config.method = .FIVE;
+            break;
+        }
     }
     config.part_order = part_order;
 
@@ -185,18 +191,21 @@ pub fn findOptimalParamEstimate(part_sum: u64, part_size: usize) std.meta.Tuple(
 /// Higher compression ratio but slower
 /// return `.{ optimal_param, optimal_bit_count }`
 pub fn findOptimalParamSearch(part_sum: u64, part_size: usize, max_param: u8) std.meta.Tuple(&.{ u6, usize }) {
-    var optimal_param: u8 = undefined;
+    var optimal_param: u6 = undefined;
     var optimal_bit_count: usize = std.math.maxInt(usize);
 
+    var bit_counts: [MAX_PARAM + 1]usize = undefined;
+    for (0..max_param + 1) |param|
+        bit_counts[param] = partEncodeCount(part_sum, part_size, @intCast(param));
+
+    // Find best param among the bit counts
     for (0..max_param + 1) |param| {
-        const bit_count = partEncodeCount(part_sum, part_size, @intCast(param));
-        if (bit_count < optimal_bit_count) {
-            optimal_bit_count = bit_count;
-            optimal_param = @intCast(param);
-        }
+        if (bit_counts[param] >= optimal_bit_count) continue;
+        optimal_bit_count = bit_counts[param];
+        optimal_param = @intCast(param);
     }
 
-    return .{ @intCast(optimal_param), optimal_bit_count };
+    return .{ optimal_param, optimal_bit_count };
 }
 
 // Copied from flake

@@ -12,6 +12,7 @@ Zig version 0.14.0
       - Write min/max frame size
       - Calculate MD5
     - Vendor Signature
+  - Stereo mode selection
   - Subframe
     - Subframe type selection
     - Constant
@@ -26,7 +27,6 @@ Zig version 0.14.0
   - Subframe type selection
   - Linear Prediction
 ## Queued
-- Stereo mode selection
 - Proper cmd args
 - Metadata
   - Vorbis Comments

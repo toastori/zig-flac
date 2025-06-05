@@ -89,6 +89,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
     std.debug.assert(dest[0].len >= samples);
     std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
+    const sample_bytes_start = 4 - self.bytes_per_sample;
     var buf = buffer;
 
     const bytes_read = try self.reader.readAll(buffer[0..samples * self.bytes_per_sample * self.channels]);
@@ -106,7 +107,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
 
     for (0..samples_read) |i| {
         for (dest) |channel| {
-            const sample_bytes: []u8 = std.mem.asBytes(&channel[i])[4-self.bytes_per_sample..];
+            const sample_bytes: []u8 = std.mem.asBytes(&channel[i])[sample_bytes_start..];
             @memcpy(sample_bytes, buf[0..self.bytes_per_sample]);
             channel[i] = std.mem.littleToNative(i32, channel[i]);
 

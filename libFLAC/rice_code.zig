@@ -115,15 +115,18 @@ fn calcSums(
 
     std.debug.assert(sums.len > max_part);
     // Sum for highest level
-    var res = residuals[pred_order..];
-    var part_size: usize = (residuals.len >> max_part) - pred_order;
+    var res = residuals;
+    const part_size: usize = residuals.len >> max_part;
+    @prefetch(residuals, .{ .locality = 3 });
     for (sums[max_part][0..(@as(usize, 1) << max_part)]) |*sum| {
         sum.* = 0;
         for (res[0..part_size]) |r|
             sum.* += calcZigzag(r);
 
         res = res[part_size..];
-        part_size = residuals.len >> max_part;
+    }
+    for (0..pred_order) |i| {
+        sums[max_part][0] -= calcZigzag(residuals[i]);
     }
     // Sum for lower levels
     // Contineously summing next 2 of previous partition size
@@ -149,6 +152,8 @@ fn calcOptimalParams(
     tracy_zone.value(part_order);
     defer tracy_zone.end();
 
+    std.debug.assert(pred_order <= 4);
+
     const part_count: usize = @as(usize, 1) << part_order;
     var all_bits: usize = 0;
     var config: RiceConfig = .{};
@@ -163,7 +168,7 @@ fn calcOptimalParams(
         part_size = blk_size >> part_order;
     }
     // Decide to extend rice method
-    if (max_param == MAX_PARAM) {
+    if (max_param == MAX_PARAM_5BIT) {
         for (config.params[0..part_count]) |param| {
             if (param <= MAX_PARAM_4BIT) continue;
             config.method = .FIVE;
@@ -191,6 +196,7 @@ pub fn findOptimalParamEstimate(part_sum: u64, part_size: usize) std.meta.Tuple(
 /// Higher compression ratio but slower
 /// return `.{ optimal_param, optimal_bit_count }`
 pub fn findOptimalParamSearch(part_sum: u64, part_size: usize, max_param: u8) std.meta.Tuple(&.{ u6, usize }) {
+    std.debug.assert(max_param == MAX_PARAM_4BIT or max_param == MAX_PARAM_5BIT);
     var optimal_param: u6 = undefined;
     var optimal_bit_count: usize = std.math.maxInt(usize);
 

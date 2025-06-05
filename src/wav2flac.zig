@@ -15,10 +15,6 @@ pub fn main(
     streaminfo: *flac.metadata.StreamInfo,
     wav: WavReader,
 ) !void {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.wavMain" });
-    defer tracy_zone.end();
-
     const file = try std.fs.cwd().createFile(filename, .{});
     defer file.close();
     var buffered_writer: BufferedWriter = .{.unbuffered_writer = file.writer()};

@@ -292,10 +292,6 @@ pub fn writeFixedSubframe(
 
             std.debug.print("ESCAPE!!!\n", .{});
         } else { // Normal
-            // Tracy
-            const tracy_zone_rice = tracy.beginZone(@src(), .{ .name = "writeRices" });
-            defer tracy_zone_rice.end();
-
             try self.writeRicePart(part_residuals, param);
         }
         remain_residuals = remain_residuals[part_size..];

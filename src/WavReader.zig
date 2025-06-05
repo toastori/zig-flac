@@ -83,6 +83,9 @@ pub fn nextSampleMd5(self: @This(), md5: *std.crypto.hash.Md5) ?i32 {
 /// - `null` when no samples to read
 /// - `StreamError.IncompleteStream` when bytes of sample does not fill up all bytes of all channels
 pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32, md5: *std.crypto.hash.Md5) !?[][]i32 {
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "WavReader.fillSamplesMd5" });
+    defer tracy_zone.end();
+
     std.debug.assert(dest[0].len >= samples);
     std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
@@ -93,23 +96,20 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
         return null;
     } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0)
         return StreamError.IncompleteStream;
+
     const bytes = buffer[0..bytes_read];
     const samples_read = bytes_read / (self.bytes_per_sample * self.channels);
+
+    const tracy_md5 = tracy.beginZone(@src(), .{ .name = "MD5" });
     md5.update(bytes);
+    tracy_md5.end();
 
     for (0..samples_read) |i| {
         for (dest) |channel| {
-            var sample: i32 = undefined;
-            const sample_bytes: []u8 = std.mem.asBytes(&sample)[4-self.bytes_per_sample..];
+            const sample_bytes: []u8 = std.mem.asBytes(&channel[i])[4-self.bytes_per_sample..];
             @memcpy(sample_bytes, buf[0..self.bytes_per_sample]);
-            sample = std.mem.littleToNative(i32, sample);
-            // unsigned to signed
-            if (self.bytes_per_sample == 1)
-                sample -= @as(i32, 128) >> @intCast(8 - self.bit_depth);
-            // sign extend
-            sample >>= shift_amt;
+            channel[i] = std.mem.littleToNative(i32, channel[i]);
 
-            channel[i] = sample;
             buf = buf[self.bytes_per_sample..];
         }
     }
@@ -118,6 +118,26 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
     for (result) |*channel| {
         channel.* = channel.*[0..samples_read];
     }
+
+    // Unsigned to signed
+    if (self.bytes_per_sample == 1){
+        const sub_amt = @as(i32, 128) >> @intCast(8 - self.bit_depth);
+        for (result) |ch| {
+            for (ch) |*sample| {
+                sample.* -= sub_amt;
+            }
+        }
+    }
+
+    // Sign extend
+    if (self.bit_depth != 32) {
+        for (result) |ch| {
+            for (ch) |*sample| {
+                sample.* >>= shift_amt;
+            }
+        }
+    }
+
     return result;
 }
 
@@ -145,10 +165,6 @@ pub fn flacStreaminfo(self: @This()) ?FlacStreaminfo {
 /// return: \
 /// - `EofError` while reading file (possibly)
 fn getFmt(self: *@This()) !void {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "WavReader.readIntoFlacStreaminfo" });
-    defer tracy_zone.end();
-
     // Format header
     if (!std.mem.eql(u8, &try self.reader.readBytesNoEof(4), "RIFF"))
         return EncodingError.NotRiffFile;

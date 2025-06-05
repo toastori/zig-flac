@@ -257,7 +257,7 @@ fn chooseSubframeEncoding(
     samples: []const SampleT,
 ) !SubframeType {
     // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.chooseSingleChannelSubframeEncoding" });
+    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.chooseSubframeEncoding" });
     defer tracy_zone.end();
 
     // -- Constant -- (First priority)

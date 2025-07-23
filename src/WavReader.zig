@@ -42,7 +42,7 @@ pub fn nextSample(self: @This()) ?i32 {
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
 
     var sample: i32 = undefined;
-    const sample_bytes = std.mem.asBytes(&sample)[4-self.bytes_per_sample..];
+    const sample_bytes = std.mem.asBytes(&sample)[4 - self.bytes_per_sample ..];
     self.reader.readNoEof(sample_bytes) catch return null;
     sample = std.mem.littleToNative(i32, sample);
     // unsigned to signed
@@ -62,7 +62,7 @@ pub fn nextSampleMd5(self: @This(), md5: *std.crypto.hash.Md5) ?i32 {
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
 
     var sample: i32 = undefined;
-    const sample_bytes = std.mem.asBytes(&sample)[4-self.bytes_per_sample..];
+    const sample_bytes = std.mem.asBytes(&sample)[4 - self.bytes_per_sample ..];
     self.reader.readNoEof(sample_bytes) catch return null;
     md5.update(sample_bytes);
     sample = std.mem.littleToNative(i32, sample);
@@ -92,7 +92,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
     const sample_bytes_start = 4 - self.bytes_per_sample;
     var buf = buffer;
 
-    const bytes_read = try self.reader.readAll(buffer[0..samples * self.bytes_per_sample * self.channels]);
+    const bytes_read = try self.reader.readAll(buffer[0 .. samples * self.bytes_per_sample * self.channels]);
     if (bytes_read == 0) {
         return null;
     } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0)
@@ -107,8 +107,10 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
 
     for (0..samples_read) |i| {
         for (dest) |channel| {
-            const sample_bytes: []u8 = std.mem.asBytes(&channel[i])[sample_bytes_start..];
-            @memcpy(sample_bytes, buf[0..self.bytes_per_sample]);
+            const sample_bytes: *[4]u8 = @ptrCast(@alignCast(&channel[i]));
+            for (0..self.bytes_per_sample, sample_bytes_start..) |b, s_b| {
+                sample_bytes[s_b] = buf[b];
+            }
             channel[i] = std.mem.littleToNative(i32, channel[i]);
 
             buf = buf[self.bytes_per_sample..];
@@ -121,7 +123,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
     }
 
     // Unsigned to signed
-    if (self.bytes_per_sample == 1){
+    if (self.bytes_per_sample == 1) {
         const sub_amt = @as(i32, 128) >> @intCast(8 - self.bit_depth);
         for (result) |ch| {
             for (ch) |*sample| {

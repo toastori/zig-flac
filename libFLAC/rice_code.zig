@@ -114,6 +114,8 @@ fn calcSums(
     defer tracy_zone.end();
 
     std.debug.assert(sums.len > max_part);
+    std.debug.assert(pred_order <= 4);
+
     // Sum for highest level
     var res = residuals;
     const part_size: usize = residuals.len >> max_part;

@@ -36,10 +36,6 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .tracy = .{
-            .url = "https://github.com/tealsnow/zig-tracy/archive/refs/tags/v0.0.9.tar.gz",
-            .hash = "tracy-0.0.9-Dn49mw9SAACCtNBeyyb3EOipVIAhYuoDI9bLBi3LDJh6",
-        },
     },
     .paths = .{
         "build.zig",

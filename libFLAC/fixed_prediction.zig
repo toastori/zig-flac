@@ -1,5 +1,4 @@
 const std = @import("std");
-const tracy = @import("tracy");
 const sample_iter = @import("samples.zig");
 
 const SampleIter = sample_iter.SampleIter;
@@ -36,10 +35,6 @@ pub fn bestOrder(
     samples: []const SampleT,
     comptime check_range: bool,
 ) ?u8 {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "fixed_prediction.bestOrder" });
-    defer tracy_zone.end();
-
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
     var iter, const tmp_total_error = MultiOrderFixedResidualIter(SampleT).init(samples, check_range);

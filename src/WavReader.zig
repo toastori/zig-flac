@@ -1,5 +1,4 @@
 const std = @import("std");
-const tracy = @import("tracy");
 const endian = @import("builtin").cpu.arch.endian();
 
 const BLOCK_SIZE = @import("option").frame_size;
@@ -83,9 +82,6 @@ pub fn nextSampleMd5(self: @This(), md5: *std.crypto.hash.Md5) ?i32 {
 /// - `null` when no samples to read
 /// - `StreamError.IncompleteStream` when bytes of sample does not fill up all bytes of all channels
 pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32, md5: *std.crypto.hash.Md5) !?[][]i32 {
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "WavReader.fillSamplesMd5" });
-    defer tracy_zone.end();
-
     std.debug.assert(dest[0].len >= samples);
     std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
@@ -101,9 +97,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
     const bytes = buffer[0..bytes_read];
     const samples_read = bytes_read / (self.bytes_per_sample * self.channels);
 
-    const tracy_md5 = tracy.beginZone(@src(), .{ .name = "MD5" });
     md5.update(bytes);
-    tracy_md5.end();
 
     for (0..samples_read) |i| {
         for (dest) |channel| {

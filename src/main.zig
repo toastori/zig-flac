@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const option = @import("option");
-const tracy = @import("tracy");
 
 const flac = @import("flac");
 
@@ -9,11 +8,6 @@ const wav2flac = @import("wav2flac.zig");
 pub const BufferedReader = std.io.BufferedReader(option.buffer_size, std.fs.File.Reader);
 
 pub fn main() !void {
-    // Tracy
-    tracy.startupProfiler();
-    defer tracy.shutdownProfiler();
-    tracy.setThreadName("main");
-
     // Allocator
     var gpa = if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}){} else {};
     defer if (@TypeOf(gpa) != void) std.log.info("gpa: {s}", .{@tagName(gpa.deinit())});

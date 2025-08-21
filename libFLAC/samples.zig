@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const tracy = @import("tracy");
 const mode = @import("builtin").mode;
 
 const LEN_PER_CHANNEL = std.math.maxInt(u16);

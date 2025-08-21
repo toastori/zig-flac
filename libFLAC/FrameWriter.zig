@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const tracy = @import("tracy");
 const metadata = @import("metadata.zig");
 const rice_code = @import("rice_code.zig");
 
@@ -244,10 +243,6 @@ pub fn writeFixedSubframe(
     order: u8,
     rice_config: RiceConfig,
 ) !void {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FrameWriter.writeFixedSubframe" });
-    defer tracy_zone.end();
-
     const param_len: u6 = @intFromEnum(rice_config.method) + 4;
     const part_count = @as(usize, 1) << rice_config.part_order;
 
@@ -272,10 +267,6 @@ pub fn writeFixedSubframe(
         const part_residuals = remain_residuals[0..part_size];
 
         if (param == rice_code.ESC_PART) { // Escaped
-            // Tracy
-            const tracy_zone_escaped = tracy.beginZone(@src(), .{ .name = "writeEscaped" });
-            defer tracy_zone_escaped.end();
-
             // Calc minimum bits to store the numbers
             // var min_digits: u6 = 0;
             // for (part_residuals) |r| {

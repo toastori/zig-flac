@@ -1,5 +1,4 @@
 const std = @import("std");
-const tracy = @import("tracy");
 const option = @import("option");
 
 const flac = @import("flac");

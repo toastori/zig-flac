@@ -1,5 +1,4 @@
 const std = @import("std");
-const tracy = @import("tracy");
 const sample_iter = @import("samples.zig");
 const FixedResidualIter = sample_iter.FixedResidualIter;
 
@@ -66,10 +65,6 @@ fn calcRiceParam(
     max_param: u6,
     pred_order: u8,
 ) std.meta.Tuple(&.{ usize, RiceConfig }) {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "rice_code.calcRiceParam" });
-    defer tracy_zone.end();
-
     var sums: [MAX_ORDER + 1][MAX_PART]u64 = undefined;
     var optimal_bit_count: usize = std.math.maxInt(usize);
     var optimal_part_order = min_part;
@@ -109,10 +104,6 @@ fn calcSums(
     pred_order: u8,
     sums: *[MAX_ORDER + 1][MAX_PART]u64,
 ) void {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "rice_code.calcSums" });
-    defer tracy_zone.end();
-
     std.debug.assert(sums.len > max_part);
     std.debug.assert(pred_order <= 4);
 
@@ -149,11 +140,6 @@ fn calcOptimalParams(
     pred_order: u8,
     sums: *[MAX_PART]u64,
 ) std.meta.Tuple(&.{ usize, RiceConfig }) {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "rice_code.calcOptimalParams" });
-    tracy_zone.value(part_order);
-    defer tracy_zone.end();
-
     std.debug.assert(pred_order <= 4);
 
     const part_count: usize = @as(usize, 1) << part_order;

@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const tracy = @import("tracy");
 const metadata = @import("metadata.zig");
 const samples_fn = @import("samples.zig");
 const rice_code = @import("rice_code.zig");
@@ -81,10 +80,6 @@ pub fn writeFrame(
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
 ) !u24 {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.writeFrame" });
-    defer tracy_zone.end();
-
     std.debug.assert(samples.len != 0 and samples[0].len != 0);
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
@@ -204,9 +199,6 @@ fn chooseStereoMethod(
     frame_size: u16,
 ) StereoType {
     const fp = @import("fixed_prediction.zig");
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.chooseStereoMethod" });
-    defer tracy_zone.end();
 
     std.debug.assert(samples.len == 2);
 
@@ -256,10 +248,6 @@ fn chooseSubframeEncoding(
     sample_size: u8,
     samples: []const SampleT,
 ) !SubframeType {
-    // Tracy
-    const tracy_zone = tracy.beginZone(@src(), .{ .name = "FlacEncoder.chooseSubframeEncoding" });
-    defer tracy_zone.end();
-
     // -- Constant -- (First priority)
     constant: {
         const first_sample: SampleT = samples[0];

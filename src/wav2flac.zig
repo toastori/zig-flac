@@ -73,6 +73,8 @@ fn encode(
 
         // Update min/max framesize in streaminfo
         streaminfo.updateFrameSize(frame_bytes);
+
+        if (samples_read[0].len < option.frame_size) break;
     }
 
     return md5;

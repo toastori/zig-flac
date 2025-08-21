@@ -112,15 +112,14 @@ pub fn writeHeader(
 
     if (blk: {
         const ctz = @ctz(block_size);
-        const clz = @clz(block_size);
-        break :blk clz + ctz == @bitSizeOf(u32) - 1 and ctz <= 15 and ctz >= 8;
+        break :blk std.math.isPowerOfTwo(block_size) and ctz <= 15 and ctz >= 8;
     }) {
         try self.writeBits(4, @ctz(block_size), .both);
     } else if (block_size == 192) {
         try self.writeBits(4, 1, .both);
     } else if (blk: {
         const rem = block_size / 144;
-        break :blk @as(u8, @clz(rem)) + @as(u8, @ctz(rem)) == @bitSizeOf(usize) - 1 and @ctz(rem) <= 5 and @ctz(rem) >= 2;
+        break :blk std.math.isPowerOfTwo(rem) and @ctz(rem) <= 5 and @ctz(rem) >= 2;
     }) {
         try self.writeBits(4, @ctz(block_size / 144), .both);
     } else if (block_size <= 0x100) {

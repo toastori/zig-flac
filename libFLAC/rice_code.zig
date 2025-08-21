@@ -122,7 +122,7 @@ fn calcSums(
         sums[max_part][0] -= calcZigzag(residuals[i]);
     }
     // Sum for lower levels
-    // Contineously summing next 2 of previous partition size
+    // Continuously summing next 2 of previous partition size
     var i = max_part -% 1;
     while (i >= min_part and i < max_part) : (i -%= 1) {
         for (0..@as(usize, 1) << i) |j| {
@@ -144,7 +144,7 @@ fn calcOptimalParams(
 
     const part_count: usize = @as(usize, 1) << part_order;
     var all_bits: usize = 0;
-    var config: RiceConfig = .{};
+    var config: RiceConfig = .{.part_order = part_order};
 
     var part_size: usize = (blk_size >> part_order) - pred_order;
     for (0..part_count) |i| {
@@ -160,10 +160,8 @@ fn calcOptimalParams(
         for (config.params[0..part_count]) |param| {
             if (param <= MAX_PARAM_4BIT) continue;
             config.method = .FIVE;
-            break;
         }
     }
-    config.part_order = part_order;
 
     return .{ all_bits + (@intFromEnum(config.method) + 4) * part_count, config };
 }

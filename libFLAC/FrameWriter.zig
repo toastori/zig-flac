@@ -29,7 +29,7 @@ pub fn init(writer: *std.Io.Writer) @This() {
 /// Write number of bits to the file (big endian)
 /// Remember to shrink bytes manually when writing negative numbers,
 /// or when byte_count exceeds `size` specified
-pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCrc) !void {
+pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCrc) error{WriteFailed}!void {
     std.debug.assert(size <= 64);
 
     const remain_bits: u7 = 64 - @as(u7, self.buffer_len);
@@ -52,13 +52,13 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
 }
 
 /// Should be used instead of `writeBits()` when writing signed integers
-pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCrc) !void {
+pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCrc) error{WriteFailed}!void {
     const bits = value & (@as(u64, std.math.maxInt(u64)) >> @intCast(64 - size));
     return self.writeBits(size, bits, calc_crc);
 }
 
 /// Flush remaining bits and align it to a byte
-pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) !void {
+pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) error{WriteFailed}!void {
     var len = self.buffer_len;
     self.bytes_written += (@as(u8, len) + 7) / 8;
     self.buffer_len = 0;
@@ -78,7 +78,7 @@ pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) !void {
 
 /// Write Crc8 in frame header \
 /// Make sure to call `flushByte()` before this
-pub inline fn writeCrc8(self: *@This()) !void {
+pub inline fn writeCrc8(self: *@This()) error{WriteFailed}!void {
     self.bytes_written += 1;
 
     const value = self.crc8.final();
@@ -88,7 +88,7 @@ pub inline fn writeCrc8(self: *@This()) !void {
 
 /// Write Crc16 in frame footer \
 /// Make sure to call `flushByte()` before this
-pub inline fn writeCrc16(self: *@This()) !void {
+pub inline fn writeCrc16(self: *@This()) error{WriteFailed}!void {
     self.bytes_written += 2;
 
     try self.writer.writeInt(u16, self.crc16.final(), .big);
@@ -103,7 +103,7 @@ pub fn writeHeader(
     channels: Channels,
     bit_depth: u8, // 0 if `Streaminfo.bit_depth` is consistant across the file
     frame_sample_number: u36,
-) !void {
+) error{WriteFailed}!void {
     std.debug.assert(self.buffer_len == 0);
     // Frame sync header
     try self.writeBits(16, if (is_fixed_size) 0xFFF8 else 0xFFF9, .both);
@@ -213,7 +213,7 @@ pub fn writeHeader(
 
 /// Write subframe in Constant encoding \
 /// Wasted Bits in Constant Subframe makes no sense at all (?
-pub fn writeConstantSubframe(self: *@This(), sample_size: u6, sample: i64) !void {
+pub fn writeConstantSubframe(self: *@This(), sample_size: u6, sample: i64) error{WriteFailed}!void {
     // subframe Header: syncBit[0](1) + Constant Coding[000000](6) + WastedBits[0](1)
     try self.writeBits(8, 0, .only16);
     try self.writeBitsWrapped(sample_size, @bitCast(sample), .only16);
@@ -225,7 +225,7 @@ pub fn writeVerbatimSubframe(
     SampleT: type,
     sample_size: u6,
     samples: []const SampleT,
-) !void {
+) error{WriteFailed}!void {
     // Subframe Header: SyncBit[0](1) + Verbatim Coding[000001](6) + WastedBits[0](1)
     try self.writeBits(8, 1 << 1, .only16);
 
@@ -241,7 +241,7 @@ pub fn writeFixedSubframe(
     residuals: []i32,
     order: u8,
     rice_config: RiceConfig,
-) !void {
+) error{WriteFailed}!void {
     const param_len: u6 = @intFromEnum(rice_config.method) + 4;
     const part_count = @as(usize, 1) << rice_config.part_order;
 
@@ -289,7 +289,7 @@ pub fn writeFixedSubframe(
     }
 }
 
-pub fn writeRicePart(self: *@This(), residuals: []i32, param: u6) !void {
+pub fn writeRicePart(self: *@This(), residuals: []i32, param: u6) error{WriteFailed}!void {
     for (residuals) |res| {
         var rice: RiceCode = .make(param, res);
         // Write Quotient

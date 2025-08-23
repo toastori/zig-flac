@@ -45,7 +45,7 @@ max_frame_size: usize = undefined,
 // -- Initializer --
 
 /// Allocate for `mid_samples`, `side_samples` and `side_samples_wide`
-pub fn initSamples(self: *@This(), allocator: std.mem.Allocator, bit_depth: u6, max_frame_size: usize) !void {
+pub fn initSamples(self: *@This(), allocator: std.mem.Allocator, bit_depth: u6, max_frame_size: usize) error{OutOfMemory}!void {
     self.max_frame_size = max_frame_size;
     if (self.stereo == .indep) return;
     self.mid_samples = (try allocator.alloc(i32, max_frame_size)).ptr;
@@ -79,7 +79,7 @@ pub fn writeFrame(
     samples: []const []const i32,
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
-) !u24 {
+) error{OutOfMemory, WriteFailed}!u24 {
     std.debug.assert(samples.len != 0 and samples[0].len != 0);
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
@@ -171,7 +171,7 @@ fn writeChannelSubframe(
     samples: []const SampleT,
     fwriter: *FrameWriter,
     sample_size: u6,
-) !void {
+) error{OutOfMemory, WriteFailed}!void {
     std.debug.assert(samples.len != 0);
     const subframe_type = try self.chooseSubframeEncoding(
         SampleT,
@@ -247,7 +247,7 @@ fn chooseSubframeEncoding(
     allocator: std.mem.Allocator,
     sample_size: u8,
     samples: []const SampleT,
-) !SubframeType {
+) error{OutOfMemory}!SubframeType {
     // -- Constant -- (First priority)
     constant: {
         const first_sample: SampleT = samples[0];
@@ -307,7 +307,7 @@ fn chooseSubframeEncoding(
 /// \
 /// return:
 /// - `Error` while writing
-pub fn skipHeader(self: @This()) !void {
+pub fn skipHeader(self: @This()) error{WriteFailed}!void {
     // Skip fLaC(4) + BlockHeader(1) + BlockLength(3) + Streaminfo(34)
     try self.writer.splatByteAll(0, HEADER_SIZE);
 }
@@ -317,7 +317,7 @@ pub fn skipHeader(self: @This()) !void {
 /// \
 /// return:
 /// - `Error` while writing
-pub fn writeHeader(self: @This(), streaminfo: metadata.StreamInfo, is_last_metadata: bool) !void {
+pub fn writeHeader(self: @This(), streaminfo: metadata.StreamInfo, is_last_metadata: bool) error{WriteFailed}!void {
     // Write Signature
     try self.writer.writeAll("fLaC");
 
@@ -332,7 +332,7 @@ pub fn writeHeader(self: @This(), streaminfo: metadata.StreamInfo, is_last_metad
 /// \
 /// return:
 /// - `Error` while writing
-pub fn writeVorbisComment(self: @This(), is_last_metadata: bool) !void {
+pub fn writeVorbisComment(self: @This(), is_last_metadata: bool) error{WriteFailed}!void {
     const vendor: []const u8 = "toastori FLAC 0.0.0";
     // Write VorbisComment Block Header
     try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .VorbisComment }, .little);

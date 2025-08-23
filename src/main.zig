@@ -5,7 +5,6 @@ const option = @import("option");
 const flac = @import("flac");
 
 const wav2flac = @import("wav2flac.zig");
-pub const BufferedReader = std.io.BufferedReader(option.buffer_size, std.fs.File.Reader);
 
 pub fn main() !void {
     // Allocator
@@ -32,9 +31,10 @@ pub fn main() !void {
 fn encodeFile(allocator: std.mem.Allocator, input: []const u8, output: []const u8) !void {
     const in_file = try std.fs.cwd().openFile(input, .{});
     defer in_file.close();
-    var buffered_reader: BufferedReader = .{ .unbuffered_reader = in_file.reader() };
+    var in_buf: [option.buffer_size]u8 = undefined;
+    var file_reader: std.fs.File.Reader = in_file.reader(&in_buf);
 
-    const wav = try @import("WavReader.zig").init(buffered_reader.reader().any());
+    const wav = try @import("WavReader.zig").init(&file_reader.interface);
 
     var streaminfo = wav.flacStreaminfo() orelse {
         std.log.err("format: flac does not support this wav format", .{});

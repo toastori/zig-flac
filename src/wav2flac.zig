@@ -5,8 +5,6 @@ const flac = @import("flac");
 
 const WavReader = @import("WavReader.zig");
 
-pub const BufferedWriter = std.io.BufferedWriter(option.buffer_size, std.fs.File.Writer);
-
 /// Main function for WAV to FLAC
 pub fn main(
     filename: []const u8,
@@ -16,10 +14,11 @@ pub fn main(
 ) !void {
     const file = try std.fs.cwd().createFile(filename, .{});
     defer file.close();
-    var buffered_writer: BufferedWriter = .{.unbuffered_writer = file.writer()};
+    var out_buf: [option.buffer_size]u8 = undefined;
+    var file_writer: std.fs.File.Writer = file.writer(&out_buf);
 
     // Flac File Writer
-    var flac_enc: flac.Encoder = .{ .writer = buffered_writer.writer().any() };
+    var flac_enc: flac.Encoder = .{ .writer = &file_writer.interface };
     try flac_enc.initSamples(allocator, streaminfo.bit_depth, option.frame_size);
     defer flac_enc.deinit(allocator, streaminfo.bit_depth);
 
@@ -35,12 +34,12 @@ pub fn main(
     };
 
     // Always flush BufferedWriter after writing
-    try buffered_writer.flush();
+    try file_writer.interface.flush();
     // Seek back and write Signature and Streaminfo
     md5.final(&streaminfo.md5);
-    try file.seekTo(0);
+    try file_writer.seekTo(0);
     try flac_enc.writeHeader(streaminfo.*, false);
-    try buffered_writer.flush();
+    try file_writer.interface.flush();
 }
 
 /// Encoding frames and samples

@@ -8,7 +8,7 @@ const FlacStreaminfo = @import("flac").metadata.StreamInfo;
 // -- Members --
 
 /// WAV file
-reader: std.io.AnyReader,
+reader: *std.Io.Reader,
 
 /// Wav formats
 /// Samples per channel
@@ -22,7 +22,7 @@ bytes_per_sample: u8 = undefined,
 
 /// The file pointer will automatically skip to "data ready",
 /// which the next byte read will be part of first sample
-pub inline fn init(reader: std.io.AnyReader) !@This() {
+pub inline fn init(reader: *std.Io.Reader) !@This() {
     var result: @This() = .{
         .reader = reader,
     };
@@ -88,7 +88,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
     const sample_bytes_start = 4 - self.bytes_per_sample;
     var buf = buffer;
 
-    const bytes_read = try self.reader.readAll(buffer[0 .. samples * self.bytes_per_sample * self.channels]);
+    const bytes_read = try self.reader.readSliceShort(buffer[0 .. samples * self.bytes_per_sample * self.channels]);
     if (bytes_read == 0) {
         return null;
     } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0)
@@ -163,25 +163,25 @@ pub fn flacStreaminfo(self: @This()) ?FlacStreaminfo {
 /// - `EofError` while reading file (possibly)
 fn getFmt(self: *@This()) !void {
     // Format header
-    if (!std.mem.eql(u8, &try self.reader.readBytesNoEof(4), "RIFF"))
+    if (!std.mem.eql(u8, try self.reader.takeArray(4), "RIFF"))
         return EncodingError.NotRiffFile;
-    try self.reader.skipBytes(4, .{}); //Chunk Size
-    if (!std.mem.eql(u8, &try self.reader.readBytesNoEof(4), "WAVE"))
+    self.reader.toss(4); //Chunk Size
+    if (!std.mem.eql(u8, try self.reader.takeArray(4), "WAVE"))
         return EncodingError.NotWaveFile;
     // Format info
-    if (!std.mem.eql(u8, &try self.reader.readBytesNoEof(4), "fmt "))
+    if (!std.mem.eql(u8, try self.reader.takeArray(4), "fmt "))
         return EncodingError.InvalidSubchunkHeader;
-    try self.reader.skipBytes(4, .{}); // fmt size
-    const codec: enum(u16) { PCM = 1, PCM_EXTEND = 0xfffe } = switch (try self.reader.readInt(u16, .little)) {
+    self.reader.toss(4); // fmt size
+    const codec: enum(u16) { PCM = 1, PCM_EXTEND = 0xfffe } = switch (try self.reader.takeInt(u16, .little)) {
         1, 0xfffe => |c| @enumFromInt(c),
         else => return EncodingError.UnsupportCodec,
     };
     // Data spec
-    self.channels = try self.reader.readInt(u16, .little);
-    self.sample_rate = try self.reader.readInt(u32, .little);
-    const byte_rate: u32 = try self.reader.readInt(u32, .little);
-    const block_align = try self.reader.readInt(u16, .little);
-    self.bit_depth = switch (try self.reader.readInt(u16, .little)) {
+    self.channels = try self.reader.takeInt(u16, .little);
+    self.sample_rate = try self.reader.takeInt(u32, .little);
+    const byte_rate: u32 = try self.reader.takeInt(u32, .little);
+    const block_align = try self.reader.takeInt(u16, .little);
+    self.bit_depth = switch (try self.reader.takeInt(u16, .little)) {
         4...32 => |d| d,
         else => return EncodingError.UnsupportBitDepth,
     };
@@ -190,24 +190,24 @@ fn getFmt(self: *@This()) !void {
         return EncodingError.BitRateUnmatch;
     if (codec == .PCM_EXTEND) {
         // Extension block size(2)
-        try self.reader.skipBytes(2, .{});
+        self.reader.toss(2);
         // Valid Bits per Sample(2)
-        self.bit_depth = try self.reader.readInt(u16, .little);
+        self.bit_depth = try self.reader.takeInt(u16, .little);
         // Channel Mask(4)
         // Subformat(16)
-        try self.reader.skipBytes(4 + 16, .{});
+        self.reader.toss(4 + 16);
     }
     // Skip unknown subchunks until "data"
     // 4 bytes tag always follow u32le length of subchunk
     while (!std.mem.eql(
         u8,
-        &(self.reader.readBytesNoEof(4) catch return EncodingError.DataNotFound),
+        self.reader.takeArray(4) catch return EncodingError.DataNotFound,
         "data",
     )) {
-        try self.reader.skipBytes(try self.reader.readInt(u32, .little), .{});
+        self.reader.toss(try self.reader.takeInt(u32, .little));
     }
 
-    const data_len: u32 = try self.reader.readInt(u32, .little);
+    const data_len: u32 = try self.reader.takeInt(u32, .little);
     if (data_len % block_align != 0)
         return EncodingError.InvalidDataLen;
 

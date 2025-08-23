@@ -35,7 +35,7 @@ max_fixed_rice_order: u8 = 8,
 max_lpc_rice_order: u8 = 8,
 
 // Context
-writer: std.io.AnyWriter,
+writer: *std.Io.Writer,
 
 mid_samples: [*]i32 = undefined,
 side_samples: [*]i32 = undefined,
@@ -309,7 +309,7 @@ fn chooseSubframeEncoding(
 /// - `Error` while writing
 pub fn skipHeader(self: @This()) !void {
     // Skip fLaC(4) + BlockHeader(1) + BlockLength(3) + Streaminfo(34)
-    try self.writer.writeByteNTimes(0, HEADER_SIZE);
+    try self.writer.splatByteAll(0, HEADER_SIZE);
 }
 
 /// Write Signature and Streaminfo \
@@ -322,7 +322,7 @@ pub fn writeHeader(self: @This(), streaminfo: metadata.StreamInfo, is_last_metad
     try self.writer.writeAll("fLaC");
 
     // Write Streaminfo Block Header
-    try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .StreamInfo });
+    try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .StreamInfo }, .little);
     try self.writer.writeInt(u24, 34, .big); // bytes of metadata block
     // Write Streaminfo Metadata
     try self.writer.writeAll(&streaminfo.bytes());
@@ -335,7 +335,7 @@ pub fn writeHeader(self: @This(), streaminfo: metadata.StreamInfo, is_last_metad
 pub fn writeVorbisComment(self: @This(), is_last_metadata: bool) !void {
     const vendor: []const u8 = "toastori FLAC 0.0.0";
     // Write VorbisComment Block Header
-    try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .VorbisComment });
+    try self.writer.writeStruct(metadata.BlockHeader{ .is_last_block = is_last_metadata, .block_type = .VorbisComment }, .little);
     try self.writer.writeInt(u24, @intCast(vendor.len + 8), .big); // vendor len + vendor_len len(4) + tags_len len(4)
     // Write vendor string
     try self.writer.writeInt(u32, @intCast(vendor.len), .little);

@@ -8,7 +8,7 @@ const RiceConfig = rice_code.RiceConfig;
 
 // -- Members --
 
-writer: std.io.AnyWriter,
+writer: *std.Io.Writer,
 
 buffer: u64 = 0,
 buffer_len: u6 = 0,
@@ -20,7 +20,7 @@ bytes_written: u24 = 0,
 
 // -- Initializer --
 
-pub fn init(writer: std.io.AnyWriter) @This() {
+pub fn init(writer: *std.Io.Writer) @This() {
     return .{ .writer = writer };
 }
 

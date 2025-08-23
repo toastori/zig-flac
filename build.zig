@@ -59,4 +59,13 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step(".test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    // Check Step (no emit bin)
+    const exe_check = b.addExecutable(.{
+        .name = "flac",
+        .root_module = exe_mod,
+    });
+
+    const check_exe = b.step("check", "Build on save check (no emit bin)");
+    check_exe.dependOn(&exe_check.step);
 }

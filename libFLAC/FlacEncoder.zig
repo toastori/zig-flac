@@ -283,7 +283,6 @@ fn chooseSubframeEncoding(
 
     const fixed_size, const rice_config = rice_code.calcRiceParamFixed(
         residuals,
-        0,
         self.max_fixed_rice_order,
         sample_size,
         best_fixed_order,

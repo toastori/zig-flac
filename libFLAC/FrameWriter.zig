@@ -16,8 +16,6 @@ buffer_len: u6 = 0,
 crc8: std.hash.crc.Crc8Smbus = .init(),
 crc16: std.hash.crc.Crc16Umts = .init(),
 
-bytes_written: u24 = 0,
-
 // -- Initializer --
 
 pub fn init(writer: *std.Io.Writer) @This() {
@@ -34,7 +32,6 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
 
     const remain_bits: u7 = 64 - @as(u7, self.buffer_len);
     if (remain_bits <= size) {
-        self.bytes_written += 8;
         self.buffer <<= if (builtin.mode == .Debug) @truncate(remain_bits) else @intCast(remain_bits);
         self.buffer |= value >> @intCast(size - remain_bits);
 
@@ -60,7 +57,6 @@ pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64, comptime ca
 /// Flush remaining bits and align it to a byte
 pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) error{WriteFailed}!void {
     var len = self.buffer_len;
-    self.bytes_written += (@as(u8, len) + 7) / 8;
     self.buffer_len = 0;
 
     while (len >= 8) {
@@ -79,8 +75,6 @@ pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) error{WriteFailed}
 /// Write Crc8 in frame header \
 /// Make sure to call `flushByte()` before this
 pub inline fn writeCrc8(self: *@This()) error{WriteFailed}!void {
-    self.bytes_written += 1;
-
     const value = self.crc8.final();
     self.calcCrc(.only16, &std.mem.toBytes(value));
     try self.writer.writeInt(u8, value, builtin.cpu.arch.endian());
@@ -89,8 +83,6 @@ pub inline fn writeCrc8(self: *@This()) error{WriteFailed}!void {
 /// Write Crc16 in frame footer \
 /// Make sure to call `flushByte()` before this
 pub inline fn writeCrc16(self: *@This()) error{WriteFailed}!void {
-    self.bytes_written += 2;
-
     try self.writer.writeInt(u16, self.crc16.final(), .big);
 }
 

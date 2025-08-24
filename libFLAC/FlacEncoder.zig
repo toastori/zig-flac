@@ -79,7 +79,7 @@ pub fn writeFrame(
     samples: []const []const i32,
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
-) error{OutOfMemory, WriteFailed}!u24 {
+) error{OutOfMemory, WriteFailed}!void {
     std.debug.assert(samples.len != 0 and samples[0].len != 0);
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
@@ -159,8 +159,6 @@ pub fn writeFrame(
 
     // Close subframe
     try fwriter.writeCrc16();
-
-    return fwriter.bytes_written;
 }
 
 /// Write subframe of a channel (any kind: single, mid, side)

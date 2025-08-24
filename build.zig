@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const strip = b.option(bool, "strip", "strip executable output (default: false)") orelse false;
 
     // Define Options
     const option = b.addOptions();
@@ -20,7 +21,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("libFLAC/root.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = optimize != .Debug,
+            .strip = strip,
         },
     );
 
@@ -29,7 +30,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .strip = optimize != .Debug,
+        .strip = strip,
     });
     exe_mod.addImport("option", option_mod);
     exe_mod.addImport("flac", libflac_mod);
@@ -68,4 +69,8 @@ pub fn build(b: *std.Build) void {
 
     const check_exe = b.step("check", "Build on save check (no emit bin)");
     check_exe.dependOn(&exe_check.step);
+    
+    const exe_bc = b.addInstallFile(exe_check.getEmittedLlvmBc(), "llvm/llvm.bc");
+    const exe_bc_step = b.step("llvm-bc", "Emit LLVM BC of entire exe");
+    exe_bc_step.dependOn(&exe_bc.step);
 }

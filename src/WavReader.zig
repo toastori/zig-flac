@@ -165,13 +165,13 @@ fn getFmt(self: *@This()) !void {
     // Format header
     if (!std.mem.eql(u8, try self.reader.takeArray(4), "RIFF"))
         return EncodingError.NotRiffFile;
-    self.reader.toss(4); //Chunk Size
+    try self.reader.discardAll(4); //Chunk Size
     if (!std.mem.eql(u8, try self.reader.takeArray(4), "WAVE"))
         return EncodingError.NotWaveFile;
     // Format info
     if (!std.mem.eql(u8, try self.reader.takeArray(4), "fmt "))
         return EncodingError.InvalidSubchunkHeader;
-    self.reader.toss(4); // fmt size
+    try self.reader.discardAll(4); // fmt size
     const codec: enum(u16) { PCM = 1, PCM_EXTEND = 0xfffe } = switch (try self.reader.takeInt(u16, .little)) {
         1, 0xfffe => |c| @enumFromInt(c),
         else => return EncodingError.UnsupportCodec,
@@ -190,12 +190,12 @@ fn getFmt(self: *@This()) !void {
         return EncodingError.BitRateUnmatch;
     if (codec == .PCM_EXTEND) {
         // Extension block size(2)
-        self.reader.toss(2);
+        try self.reader.discardAll(2);
         // Valid Bits per Sample(2)
         self.bit_depth = try self.reader.takeInt(u16, .little);
         // Channel Mask(4)
         // Subformat(16)
-        self.reader.toss(4 + 16);
+        try self.reader.discardAll(4 + 16);
     }
     // Skip unknown subchunks until "data"
     // 4 bytes tag always follow u32le length of subchunk
@@ -204,7 +204,7 @@ fn getFmt(self: *@This()) !void {
         self.reader.takeArray(4) catch return EncodingError.DataNotFound,
         "data",
     )) {
-        self.reader.toss(try self.reader.takeInt(u32, .little));
+        try self.reader.discardAll(try self.reader.takeInt(u32, .little));
     }
 
     const data_len: u32 = try self.reader.takeInt(u32, .little);

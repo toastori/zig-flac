@@ -33,13 +33,13 @@ pub fn writeBits(self: *@This(), size: u7, value: u64, comptime calc_crc: CalcCr
     const remain_bits: u7 = 64 - @as(u7, self.buffer_len);
     if (remain_bits <= size) {
         self.buffer <<= if (builtin.mode == .Debug) @truncate(remain_bits) else @intCast(remain_bits);
-        self.buffer |= value >> @intCast(size - remain_bits);
+        self.buffer_len = @intCast(size - remain_bits);
+        self.buffer |= value >> self.buffer_len;
 
         self.buffer = std.mem.nativeToBig(u64, self.buffer);
         self.calcCrc(calc_crc, std.mem.asBytes(&self.buffer));
         try self.writer.writeInt(u64, self.buffer, builtin.cpu.arch.endian());
 
-        self.buffer_len = @intCast(size - remain_bits);
         self.buffer = value;
     } else {
         self.buffer <<= @intCast(size);
@@ -56,20 +56,19 @@ pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64, comptime ca
 
 /// Flush remaining bits and align it to a byte
 pub fn flushBytes(self: *@This(), comptime calc_crc: CalcCrc) error{WriteFailed}!void {
-    var len = self.buffer_len;
-    self.buffer_len = 0;
+    const len: u7 = self.buffer_len;
+    const shift_amt: u6 = @intCast((64 - len) % 8);
 
-    while (len >= 8) {
-        len -= 8;
-        const byte: u8 = @truncate(self.buffer >> len);
-        self.calcCrc(calc_crc, &.{byte});
-        try self.writer.writeByte(byte);
-    }
-    if (len != 0) {
-        const byte: u8 = @truncate(self.buffer << @intCast(8 - @as(u8, @intCast(len))));
-        self.calcCrc(calc_crc, &.{byte});
-        try self.writer.writeByte(byte);
-    }
+    const total_bits = len + shift_amt;
+    std.debug.assert(total_bits % 8 == 0);
+    const total_bytes = total_bits / 8;
+
+    self.buffer = std.mem.nativeToBig(u64, self.buffer << shift_amt);
+    const bytes = std.mem.asBytes(&self.buffer)[8 - total_bytes..];
+    self.calcCrc(calc_crc, bytes);
+    try self.writer.writeAll(bytes);
+
+    self.buffer_len = 0;
 }
 
 /// Write Crc8 in frame header \
@@ -270,9 +269,10 @@ pub fn writeFixedSubframe(
             // }
 
             // Currently is just 0
-            try self.writeBits(5, 0, .only16);
-
-            std.debug.print("ESCAPE!!!\n", .{});
+            // try self.writeBits(5, 0, .only16);
+            //
+            // std.debug.print("ESCAPE!!!\n", .{});
+            unreachable;
         } else { // Normal
             try self.writeRicePart(part_residuals, param);
         }

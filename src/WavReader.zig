@@ -85,8 +85,6 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
     std.debug.assert(dest[0].len >= samples);
     std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
-    const sample_bytes_start = 4 - self.bytes_per_sample;
-    var buf = buffer;
 
     const bytes_read = try self.reader.readSliceShort(buffer[0 .. samples * self.bytes_per_sample * self.channels]);
     if (bytes_read == 0) {
@@ -99,17 +97,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
 
     md5.update(bytes);
 
-    for (0..samples_read) |i| {
-        for (dest) |channel| {
-            const sample_bytes: *[4]u8 = @ptrCast(@alignCast(&channel[i]));
-            for (0..self.bytes_per_sample, sample_bytes_start..) |b, s_b| {
-                sample_bytes[s_b] = buf[b];
-            }
-            channel[i] = std.mem.littleToNative(i32, channel[i]);
-
-            buf = buf[self.bytes_per_sample..];
-        }
-    }
+    self.bytesToSample(bytes, dest);
 
     const result = dest;
     for (result) |*channel| {
@@ -212,6 +200,80 @@ fn getFmt(self: *@This()) !void {
         return EncodingError.InvalidDataLen;
 
     self.samples_count = data_len / (self.channels * (self.bit_depth / 8));
+}
+
+fn bytesToSample(self: @This(), bytes: []const u8, dest: []const []i32) void {
+    switch (self.bit_depth) {
+        4, 8 => { // 1 byte
+            switch (self.channels) {
+                1 => _bytesToSamples(1, 1, bytes, dest),
+                2 => _bytesToSamples(2, 1, bytes, dest),
+                3 => _bytesToSamples(3, 1, bytes, dest),
+                4 => _bytesToSamples(4, 1, bytes, dest),
+                5 => _bytesToSamples(5, 1, bytes, dest),
+                6 => _bytesToSamples(6, 1, bytes, dest),
+                7 => _bytesToSamples(7, 1, bytes, dest),
+                8 => _bytesToSamples(8, 1, bytes, dest),
+                else => unreachable,
+            }
+        },
+        12, 16 => { // 2 bytes
+            switch (self.channels) {
+                1 => _bytesToSamples(1, 2, bytes, dest),
+                2 => _bytesToSamples(2, 2, bytes, dest),
+                3 => _bytesToSamples(3, 2, bytes, dest),
+                4 => _bytesToSamples(4, 2, bytes, dest),
+                5 => _bytesToSamples(5, 2, bytes, dest),
+                6 => _bytesToSamples(6, 2, bytes, dest),
+                7 => _bytesToSamples(7, 2, bytes, dest),
+                8 => _bytesToSamples(8, 2, bytes, dest),
+                else => unreachable,
+            }
+        },
+        20, 24 => { // 3 bytes
+            switch (self.channels) {
+                1 => _bytesToSamples(1, 3, bytes, dest),
+                2 => _bytesToSamples(2, 3, bytes, dest),
+                3 => _bytesToSamples(3, 3, bytes, dest),
+                4 => _bytesToSamples(4, 3, bytes, dest),
+                5 => _bytesToSamples(5, 3, bytes, dest),
+                6 => _bytesToSamples(6, 3, bytes, dest),
+                7 => _bytesToSamples(7, 3, bytes, dest),
+                8 => _bytesToSamples(8, 3, bytes, dest),
+                else => unreachable,
+            }
+        },
+        32 => { // 4 bytes
+            switch (self.channels) {
+                1 => _bytesToSamples(1, 4, bytes, dest),
+                2 => _bytesToSamples(2, 4, bytes, dest),
+                3 => _bytesToSamples(3, 4, bytes, dest),
+                4 => _bytesToSamples(4, 4, bytes, dest),
+                5 => _bytesToSamples(5, 4, bytes, dest),
+                6 => _bytesToSamples(6, 4, bytes, dest),
+                7 => _bytesToSamples(7, 4, bytes, dest),
+                8 => _bytesToSamples(8, 4, bytes, dest),
+                else => unreachable,
+            }
+        },
+        else => unreachable,
+    }
+}
+
+fn _bytesToSamples (channels: comptime_int, bytes_depth: comptime_int, bytes: []const u8, dest: []const []i32) void {
+    const samples_read = bytes.len / (bytes_depth * channels);
+    const sample_bytes_start = 4 - bytes_depth;
+    var b: usize = 0;
+    for (0..samples_read) |i| {
+        inline for (0..channels) |ch| {
+            const sample_bytes: *[4]u8 = @alignCast(@ptrCast(&dest[ch][i]));
+            inline for (sample_bytes_start..4) |s_b| {
+                sample_bytes[s_b] = bytes[b];
+                b += 1;
+            }
+            dest[ch][i] = std.mem.nativeToLittle(i32, dest[ch][i]);
+        }
+    }
 }
 
 // -- Error --

@@ -49,7 +49,7 @@ pub fn writeBits(self: *@This(), size: u8, value: u64) error{WriteFailed}!void {
     self.end += 1;
 
     if (self.end == self.buffer.len) {
-        // @branchHint(.unlikely);
+        @branchHint(.cold);
         try self.flushAllNoBitEndReset();
     }
 

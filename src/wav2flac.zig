@@ -12,7 +12,9 @@ pub fn main(
     streaminfo: *flac.metadata.StreamInfo,
     wav: WavReader,
 ) !void {
-    const file = try std.fs.cwd().createFile(filename, .{});
+    const file = if (std.mem.eql(u8, filename, "-"))
+        std.fs.File.stdout()
+        else try std.fs.cwd().createFile(filename, .{});
     defer file.close();
     var out_buf: [option.buffer_size]u8 = undefined;
     var file_writer: std.fs.File.Writer = file.writer(&out_buf);
@@ -29,7 +31,7 @@ pub fn main(
 
     // Start Encoding flac
     var md5: std.crypto.hash.Md5 = try switch (streaminfo.bit_depth) {
-        4...32 => encode(allocator, streaminfo, file, wav, &flac_enc),
+        4...32 => encode(allocator, streaminfo, wav, &flac_enc),
         else => unreachable,
     };
 
@@ -46,7 +48,6 @@ pub fn main(
 fn encode(
     allocator: std.mem.Allocator,
     streaminfo: *flac.metadata.StreamInfo,
-    wav_file: std.fs.File,
     wav: WavReader,
     flac_enc: *flac.Encoder,
 ) !std.crypto.hash.Md5 {
@@ -68,15 +69,11 @@ fn encode(
     while (true) : (frame_idx += 1) {
         const samples_read = (try wav.fillSamplesMd5(wav_sample_buf, option.frame_size, samples, &md5)) orelse break;
 
-        const start_pos = try wav_file.getPos() + flac_enc.writer.end;
-
-        try flac_enc.writeFrame(allocator, samples_read, frame_idx, streaminfo.*);
-
-        const end_pos = try wav_file.getPos() + flac_enc.writer.end;
-        const bytes_written = end_pos - start_pos;
+        const bytes_written =
+            try flac_enc.writeFrame(allocator, samples_read, frame_idx, streaminfo.*);
 
         // Update min/max framesize in streaminfo
-        streaminfo.updateFrameSize(@intCast(bytes_written));
+        streaminfo.updateFrameSize(bytes_written);
 
         if (samples_read[0].len < option.frame_size) break;
     }

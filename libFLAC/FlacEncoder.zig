@@ -79,14 +79,15 @@ pub fn writeFrame(
     samples: []const []const i32,
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
-) error{OutOfMemory, WriteFailed}!void {
+) error{OutOfMemory, WriteFailed}!u24 {
     std.debug.assert(samples.len != 0 and samples[0].len != 0);
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
             std.debug.assert(samples[i].len == samples[i + 1].len);
     }
 
-    var fwriter: FrameWriter = .init(self.writer);
+    var fwriter_buf: [1024]u64 = undefined;
+    var fwriter: FrameWriter = .init(self.writer, &fwriter_buf);
 
     const frame_size: u16 = @intCast(samples[0].len);
     const stereo_mode: StereoType = if (samples.len == 2 and self.stereo != .indep)
@@ -155,10 +156,9 @@ pub fn writeFrame(
         try self.writeChannelSubframe(i32, allocator, samples[1], &fwriter, streaminfo.bit_depth);
     }
 
-    try fwriter.flushBytes(.only16);
-
     // Close subframe
     try fwriter.writeCrc16();
+    return fwriter.bytes_written;
 }
 
 /// Write subframe of a channel (any kind: single, mid, side)

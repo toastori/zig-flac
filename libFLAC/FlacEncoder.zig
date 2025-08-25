@@ -247,13 +247,8 @@ fn chooseSubframeEncoding(
     samples: []const SampleT,
 ) error{OutOfMemory}!SubframeType {
     // -- Constant -- (First priority)
-    constant: {
-        const first_sample: SampleT = samples[0];
-        for (samples[1..]) |sample| {
-            if (sample != first_sample) break :constant;
-        }
+    if (std.mem.allEqual(SampleT, samples[1..], samples[0]))
         return .{ .Constant = {} };
-    }
 
     // -- Verbatim -- (Least priority)
     if (samples.len <= fixed_prediction.MAX_ORDER) return .{ .Verbatim = {} };

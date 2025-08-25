@@ -12,9 +12,7 @@ pub fn main(
     streaminfo: *flac.metadata.StreamInfo,
     wav: WavReader,
 ) !void {
-    const file = if (std.mem.eql(u8, filename, "-"))
-        std.fs.File.stdout()
-        else try std.fs.cwd().createFile(filename, .{});
+    const file = try std.fs.cwd().createFile(filename, .{});
     defer file.close();
     var out_buf: [option.buffer_size]u8 = undefined;
     var file_writer: std.fs.File.Writer = file.writer(&out_buf);

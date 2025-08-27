@@ -32,47 +32,6 @@ pub inline fn init(reader: *std.Io.Reader) !@This() {
 
 // -- Methods --
 
-/// Get next sample \
-/// \
-/// return:
-/// - bit extended `i32`
-/// - `null` when no more samples
-pub fn nextSample(self: @This()) ?i32 {
-    const shift_amt: u5 = @intCast(32 - self.bit_depth);
-
-    var sample: i32 = undefined;
-    const sample_bytes = std.mem.asBytes(&sample)[4 - self.bytes_per_sample ..];
-    self.reader.readNoEof(sample_bytes) catch return null;
-    sample = std.mem.littleToNative(i32, sample);
-    // unsigned to signed
-    if (self.bytes_per_sample == 1)
-        sample -= @as(i32, 128) >> @intCast(8 - self.bit_depth);
-    // sign extend
-    sample >>= shift_amt;
-    return sample;
-}
-
-/// Get next sample and update MD5 \
-/// \
-/// return:
-/// - bit extended `i32`
-/// - `null` when no more samples
-pub fn nextSampleMd5(self: @This(), md5: *std.crypto.hash.Md5) ?i32 {
-    const shift_amt: u5 = @intCast(32 - self.bit_depth);
-
-    var sample: i32 = undefined;
-    const sample_bytes = std.mem.asBytes(&sample)[4 - self.bytes_per_sample ..];
-    self.reader.readNoEof(sample_bytes) catch return null;
-    md5.update(sample_bytes);
-    sample = std.mem.littleToNative(i32, sample);
-    // unsigned to signed
-    if (self.bytes_per_sample == 1)
-        sample -= @as(i32, 128) >> @intCast(8 - self.bit_depth);
-    // sign extend
-    sample >>= shift_amt;
-    return sample;
-}
-
 /// Fill dest with `samples` amount of samples on each channels
 /// or less when reached end of stream \
 /// Length of dest's referenced slice might be modified end of stream \

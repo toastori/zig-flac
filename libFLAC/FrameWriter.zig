@@ -44,7 +44,7 @@ pub fn writeBits(self: *@This(), size: u8, value: u64) error{WriteFailed}!void {
         return;
     }
     self.bit_end = size - remain_bits;
-    self.buffer[self.end] <<= @intCast(remain_bits % W_BIT);
+    self.buffer[self.end] <<= @truncate(remain_bits);
     self.buffer[self.end] |= value >> @intCast(self.bit_end);
     self.end += 1;
 

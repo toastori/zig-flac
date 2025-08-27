@@ -271,7 +271,7 @@ pub fn writeFixedSubframe(
         try self.writeBitsWrapped(sample_size, @as(u32, @bitCast(residuals[i])));
     }
 
-    // Rice code with N nits param(2) + Partition order(4)
+    // Rice code with N bits param(2) + Partition order(4)
     try self.writeBits(2 + 4, (@intFromEnum(rice_config.method) << 4) | rice_config.part_order);
 
     // Write Rice codes

@@ -18,8 +18,9 @@ pub fn main(
     var file_writer: std.fs.File.Writer = file.writer(&out_buf);
 
     // Flac File Writer
-    var flac_enc: flac.Encoder = .{ .writer = &file_writer.interface };
-    try flac_enc.initSamples(allocator, streaminfo.bit_depth, option.frame_size);
+    // var flac_enc: flac.Encoder = .{ .writer = &file_writer.interface };
+    // try flac_enc.initSamples(allocator, streaminfo.bit_depth, option.frame_size);
+    const flac_enc: flac.Encoder = try .init(allocator, &file_writer.interface, .test_default, streaminfo.bit_depth, option.frame_size);
     defer flac_enc.deinit(allocator, streaminfo.bit_depth);
 
     // Skip Signature and Streaminfo
@@ -29,7 +30,7 @@ pub fn main(
 
     // Start Encoding flac
     var md5: std.crypto.hash.Md5 = try switch (streaminfo.bit_depth) {
-        4...32 => encode(allocator, streaminfo, wav, &flac_enc),
+        4...32 => encode(allocator, streaminfo, wav, flac_enc),
         else => unreachable,
     };
 
@@ -47,7 +48,7 @@ fn encode(
     allocator: std.mem.Allocator,
     streaminfo: *flac.metadata.StreamInfo,
     wav: WavReader,
-    flac_enc: *flac.Encoder,
+    flac_enc: flac.Encoder,
 ) !std.crypto.hash.Md5 {
     var md5 = std.crypto.hash.Md5.init(.{});
 

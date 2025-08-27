@@ -29,7 +29,8 @@ pub inline fn inRange(num: i64) bool {
     return num <= std.math.maxInt(i32) or num > std.math.minInt(i32);
 }
 
-/// Find the best fixed prediction order by looking for smallest residuals sum
+/// Find the best fixed prediction order by looking for smallest residuals sum \
+/// return `null` if any residual is out of i32 range
 pub fn bestOrder(
     SampleT: type,
     samples: []const SampleT,

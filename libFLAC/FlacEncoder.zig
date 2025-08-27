@@ -23,42 +23,35 @@ pub const HEADER_SIZE = 4 + 1 + 3 + 34;
 // -- Members --
 
 // Settings
-lpc: Setting.LPC = .fixed,
-stereo: Setting.Stereo = .auto,
-// value [1, 32] ([1, 12] for subset when sample_rate <= 48k)
-min_lpc_order: u8 = 0,
-max_lpc_order: u8 = 0,
-// value [0, 30] (each increase oubles search time)
-lpc_round_var: u8 = 0,
-// value [0, 15] ([0, 8] for subset)
-max_fixed_rice_order: u8 = 8,
-max_lpc_rice_order: u8 = 8,
+config: Config = .test_default,
 
 // Context
 writer: *std.Io.Writer,
 
-mid_samples: [*]i32 = undefined,
-side_samples: [*]i32 = undefined,
-side_samples_wide: [*]i64 = undefined,
-max_frame_size: usize = undefined,
+// One time allocation
+mid_samples: [*]i32 = undefined, // Conditional
+side_samples: [*]i32 = undefined, // Conditional
+side_samples_wide: [*]i64 = undefined, // Conditional
+max_frame_size: usize,
 
 // -- Initializer --
 
-/// Allocate for `mid_samples`, `side_samples` and `side_samples_wide`
-pub fn initSamples(self: *@This(), allocator: std.mem.Allocator, bit_depth: u6, max_frame_size: usize) error{OutOfMemory}!void {
-    self.max_frame_size = max_frame_size;
-    if (self.stereo == .indep) return;
-    self.mid_samples = (try allocator.alloc(i32, max_frame_size)).ptr;
-    errdefer allocator.free(self.mid_samples[0..self.max_frame_size]);
+/// Allocate one time allocated buffers used internally conditionally
+pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, setting: Config, bit_depth: u8, max_frame_size: usize) error{OutOfMemory}!FlacEncoder {
+    var result: FlacEncoder = .{ .writer = writer, .max_frame_size = max_frame_size };
+    if (setting.stereo == .indep) return result;
+    result.mid_samples = (try allocator.alloc(i32, max_frame_size)).ptr;
+    errdefer allocator.free(result.mid_samples[0..max_frame_size]);
     if (bit_depth < 32)
-        self.side_samples = (try allocator.alloc(i32, max_frame_size)).ptr
+        result.side_samples = (try allocator.alloc(i32, max_frame_size)).ptr
     else
-        self.side_samples_wide =  (try allocator.alloc(i64, max_frame_size)).ptr;
+        result.side_samples_wide = (try allocator.alloc(i64, max_frame_size)).ptr;
+    return result;
 }
 
 /// Clean up allocated slices
 pub fn deinit(self: @This(), allocator: std.mem.Allocator, bit_depth: u6) void {
-    if (self.stereo == .indep) return;
+    if (self.config.stereo == .indep) return;
     allocator.free(self.mid_samples[0..self.max_frame_size]);
     if (bit_depth < 32)
         allocator.free(self.side_samples[0..self.max_frame_size])
@@ -74,12 +67,12 @@ pub fn deinit(self: @This(), allocator: std.mem.Allocator, bit_depth: u6) void {
 /// - `Bytes of frame` for updating stream info
 /// - `Error` when writing
 pub fn writeFrame(
-    self: *@This(),
+    self: @This(),
     allocator: std.mem.Allocator,
     samples: []const []const i32,
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
-) error{OutOfMemory, WriteFailed}!u24 {
+) error{ OutOfMemory, WriteFailed }!u24 {
     std.debug.assert(samples.len != 0 and samples[0].len != 0);
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
@@ -90,31 +83,31 @@ pub fn writeFrame(
     var fwriter: FrameWriter = .init(self.writer, &fwriter_buf);
 
     const frame_size: u16 = @intCast(samples[0].len);
-    const stereo_mode: StereoType = if (samples.len == 2 and self.stereo != .indep)
+    const stereo_mode: StereoType = if (samples.len == 2 and self.config.stereo != .indep)
         chooseStereoMethod(samples, frame_size)
     else
         .LeftRight;
 
     const mid, const side, const side_wide = switch (stereo_mode) {
-        .LeftRight => .{undefined, undefined, undefined},
+        .LeftRight => .{ undefined, undefined, undefined },
         .MidSide => blk: {
             if (streaminfo.bit_depth == 32) {
                 const m, const s = samples_fn.midSideChannels(i64, samples[0], samples[1], self.mid_samples[0..self.max_frame_size], self.side_samples_wide[0..self.max_frame_size]);
-                break :blk .{m, undefined, s};
+                break :blk .{ m, undefined, s };
             } else {
                 const m, const s = samples_fn.midSideChannels(i32, samples[0], samples[1], self.mid_samples[0..self.max_frame_size], self.side_samples[0..self.max_frame_size]);
-                break :blk .{m, s, undefined};
+                break :blk .{ m, s, undefined };
             }
         },
         else => blk: {
             if (streaminfo.bit_depth == 32) {
                 const s = samples_fn.sideChannel(i64, samples[0], samples[1], self.side_samples_wide[0..self.max_frame_size]);
-                break :blk .{undefined, undefined, s};
+                break :blk .{ undefined, undefined, s };
             } else {
                 const s = samples_fn.sideChannel(i32, samples[0], samples[1], self.side_samples[0..self.max_frame_size]);
-                break :blk .{undefined, s, undefined};
+                break :blk .{ undefined, s, undefined };
             }
-        }
+        },
     };
 
     // Write header start
@@ -169,7 +162,7 @@ fn writeChannelSubframe(
     samples: []const SampleT,
     fwriter: *FrameWriter,
     sample_size: u6,
-) error{OutOfMemory, WriteFailed}!void {
+) error{ OutOfMemory, WriteFailed }!void {
     std.debug.assert(samples.len != 0);
     const subframe_type = try self.chooseSubframeEncoding(
         SampleT,
@@ -257,18 +250,18 @@ fn chooseSubframeEncoding(
     var subframe_type: SubframeType = .{ .Verbatim = {} }; // Default fallback to Verbatim
 
     // -- Fixed Prediction --
-    const best_fixed_order = (if (sample_size < 28)
+    const best_fixed_order = if (sample_size < 28)
         fixed_prediction.bestOrder(
             SampleT,
             samples,
             false,
-        )
+        ) orelse unreachable
     else
         fixed_prediction.bestOrder(
             SampleT,
             samples,
             true,
-        )) orelse return subframe_type;
+        ) orelse return subframe_type;
 
     // Prepare residuals
     const residuals = try allocator.alloc(i32, samples.len);
@@ -276,7 +269,8 @@ fn chooseSubframeEncoding(
 
     const fixed_size, const rice_config = rice_code.calcRiceParamFixed(
         residuals,
-        self.max_fixed_rice_order,
+        self.config.max_rice_order,
+        self.config.max_rice_param,
         sample_size,
         best_fixed_order,
     );
@@ -338,17 +332,40 @@ pub fn writeVorbisComment(self: @This(), is_last_metadata: bool) error{WriteFail
 
 // -- Types --
 
-pub const Setting = struct {
-    pub const LPC = enum {
-        none,
-        fixed, // TODO
+pub const Config = struct {
+    prediction: Prediction,
+    stereo: Stereo,
+    /// Rice partition order: value [0, 15] ([0, 8] for subset)
+    max_rice_order: u8,
+    /// Rice param limit: value [0, 30] ([0, 14] for rice1 only)
+    max_rice_param: u8,
+
+    /// linear prediction
+    /// - Lax within range [1, 32]
+    /// - Subset within range [1, 12] for sampling rates <= 48k
+    pub const Prediction = enum(u8) {
+        fixed = 0,
+        none = 0xFF,
+        _,
+
+        fn linear(self: @This()) u8 {
+            return switch (@intFromBool(self)) {
+                1...32 => |i| i,
+                else => unreachable,
+            };
+        }
     };
 
-    pub const Stereo = enum {
+    /// Stereo decorrelation option
+    pub const Stereo = enum(u8) {
         indep,
-        mid_side,
+        // left_side,
+        // side_right,
+        // mid_side,
         auto,
     };
+
+    pub const test_default: @This() = .{ .prediction = .fixed, .stereo = .auto, .max_rice_order = 8, .max_rice_param = rice_code.MAX_PARAM };
 };
 
 const StereoType = enum(u8) {

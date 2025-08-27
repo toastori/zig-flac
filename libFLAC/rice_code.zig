@@ -2,8 +2,8 @@ const std = @import("std");
 const sample_iter = @import("samples.zig");
 const FixedResidualIter = sample_iter.FixedResidualIter;
 
-const MAX_PARAM_4BIT = std.math.maxInt(u4) - 1;
-const MAX_PARAM_5BIT = std.math.maxInt(u5) - 1;
+const MAX_PARAM_4BIT: u6 = std.math.maxInt(u4) - 1;
+const MAX_PARAM_5BIT: u6 = std.math.maxInt(u5) - 1;
 pub const MAX_PARAM = MAX_PARAM_5BIT;
 pub const ESC_PART = std.math.maxInt(u5);
 const MAX_ORDER = 8; // Subset now
@@ -37,8 +37,9 @@ pub const RiceConfig = struct {
 
 pub fn calcRiceParamFixed(
     residuals: []i32,
-    max_part_order: u8,
-    sample_size: u8,
+    max_order: u8,
+    max_param: u8,
+    bit_depth: u8,
     pred_order: u8,
 ) std.meta.Tuple(&.{ usize, RiceConfig }) {
     std.debug.assert(residuals.len > pred_order);
@@ -48,10 +49,10 @@ pub fn calcRiceParamFixed(
     else
         std.math.maxInt(u6);
 
-    const max: u6 = @intCast(@min(max_part_order, @ctz(residuals.len), pred_order_limited));
-    const max_param: u6 = if (sample_size > 16) MAX_PARAM_5BIT else MAX_PARAM_4BIT;
+    const max: u6 = @intCast(@min(max_order, @ctz(residuals.len), pred_order_limited));
+    const maximum_param: u6 = @intCast(@min(if (bit_depth > 16) MAX_PARAM_5BIT else MAX_PARAM_4BIT, max_param));
 
-    return calcRiceParam(residuals, max, max_param, pred_order);
+    return calcRiceParam(residuals, max, maximum_param, pred_order);
 }
 
 // Copied from flake
@@ -151,7 +152,7 @@ fn calcOptimalParams(
         part_size = blk_size >> part_order;
     }
     // Decide to extend rice method
-    if (max_param == MAX_PARAM_5BIT) {
+    if (max_param > MAX_PARAM_4BIT) {
         for (config.params[0..part_count]) |param| {
             if (param <= MAX_PARAM_4BIT) continue;
             config.method = .FIVE;

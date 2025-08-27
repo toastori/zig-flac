@@ -207,7 +207,7 @@ fn chooseStereoMethod(
     const right = samples[1];
 
     var left_prev: @Vector(4, i64) = .{ left[1], left[0], undefined, undefined };
-    var right_prev: @Vector(4, i64) = .{ left[1], right[0], undefined, undefined };
+    var right_prev: @Vector(4, i64) = .{ right[1], right[0], undefined, undefined };
 
     for (2..left.len) |i| {
         const l: i64 = fp.calcResidual(left[i], left_prev, 2);

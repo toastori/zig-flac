@@ -199,22 +199,15 @@ fn chooseStereoMethod(
     const left = samples[0];
     const right = samples[1];
 
-    var left_prev: @Vector(4, i64) = .{ left[1], left[0], undefined, undefined };
-    var right_prev: @Vector(4, i64) = .{ right[1], right[0], undefined, undefined };
 
     for (2..left.len) |i| {
-        const l: i64 = fp.calcResidual(left[i], left_prev, 2);
-        const r: i64 = fp.calcResidual(right[i], right_prev, 2);
+        const l: i64 = fp.calcResidual(i32, i64, left, i, 2);
+        const r: i64 = fp.calcResidual(i32, i64, right, i, 2);
 
         sum[LEFT] += @abs(l);
         sum[RIGHT] += @abs(r);
         sum[MID] += @abs(l + r >> 1);
         sum[SIDE] += @abs(l - r);
-
-        left_prev =
-            std.simd.shiftElementsRight(left_prev, 1, left[i]);
-        right_prev =
-            std.simd.shiftElementsRight(right_prev, 1, right[i]);
     }
     for (&sum) |*s| {
         _, const bits = rice_code.findOptimalParamEstimate(2 * s.*, frame_size);

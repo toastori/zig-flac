@@ -8,20 +8,26 @@ const MultiOrderFixedResidualIter = sample_iter.MultiOrderFixedResidualIter;
 
 pub const MAX_ORDER = 4;
 
-pub const COEFFICIENTS = [_]@Vector(4, i64){
+pub const NEO_COEFF: [5][4]i32 = .{
     .{ 0, 0, 0, 0 }, // 0th order
     .{ 1, 0, 0, 0 }, // 1st order
-    .{ 2, -1, 0, 0 }, // 2nd order
-    .{ 3, -3, 1, 0 }, // 3rd order
-    .{ 4, -6, 4, -1 }, // 4th order
+    .{ -1, 2, 0, 0 }, // 2nd order
+    .{ 1, -3, 3, 0 }, // 3rd order
+    .{ -1, 4, -6, 4 }, // 4th order
 };
 
 // -- Functions --
 
-/// Calculate prediction residuals
-pub fn calcResidual(sample: i64, prev_samples: @Vector(4, i64), order: usize) i64 {
-    const prediction: i64 = @reduce(.Add, prev_samples * COEFFICIENTS[order]);
-    return sample - prediction;
+/// Calculate the n-th residual
+pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize) R {
+    if (T != i32 and T != i64) @compileError("neoCalcResidual: expect T as i32 or i64");
+    if (R != i32 and R != i64) @compileError("neoCalcResidual: expect R as i32 or i64");
+    std.debug.assert(n >= order);
+    var prediction: T = 0;
+    for (0..order, n - order..) |o, i| {
+        prediction += samples[i] * NEO_COEFF[order][o];
+    }
+    return @intCast(samples[n] - prediction);
 }
 
 /// Check if the residual is in range
@@ -38,16 +44,14 @@ pub fn bestOrder(
 ) ?u8 {
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
-    var iter, const tmp_total_error = MultiOrderFixedResidualIter(SampleT).init(samples, check_range);
-    var total_error = tmp_total_error ++ [_]u64{0};
 
-    while (iter.next(check_range)) |residuals| {
-        for (residuals, &total_error) |res, *err| {
-            if (!check_range or inRange(res.?))
-                err.* += @abs(res.?)
-            // u49 is used because its the value never be reached
-            // when all values are in range
-            else err.* = std.math.maxInt(u49);
+    var total_error: [5]u64 = @splat(0);
+    for (0..5) |order| {
+        var i: usize = order;
+        while (i < samples.len) : (i += 1) {
+            const res = calcResidual(SampleT, i64, samples, i, order);
+            if (!check_range or inRange(res)) total_error[order] += @abs(res)
+            else total_error[order] = std.math.maxInt(u49);
         }
     }
 

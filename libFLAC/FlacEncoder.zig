@@ -32,12 +32,12 @@ writer: *std.Io.Writer,
 mid_samples: [*]i32 = undefined, // Conditional
 side_samples: [*]i32 = undefined, // Conditional
 side_samples_wide: [*]i64 = undefined, // Conditional
-max_frame_size: usize,
+max_frame_size: u16,
 
 // -- Initializer --
 
 /// Allocate one time allocated buffers used internally conditionally
-pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, setting: Config, bit_depth: u8, max_frame_size: usize) error{OutOfMemory}!FlacEncoder {
+pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, setting: Config, bit_depth: u8, max_frame_size: u16) error{OutOfMemory}!FlacEncoder {
     var result: FlacEncoder = .{ .writer = writer, .max_frame_size = max_frame_size };
     if (setting.stereo == .indep) return result;
     result.mid_samples = (try allocator.alloc(i32, max_frame_size)).ptr;
@@ -74,7 +74,7 @@ pub fn writeFrame(
     streaminfo: metadata.StreamInfo,
 ) error{ OutOfMemory, WriteFailed }!u24 {
     std.debug.assert(samples.len != 0);
-    std.debug.assert(samples[0].len != 0 and samples.len <= 65535);
+    std.debug.assert(samples[0].len != 0 and samples.len <= self.max_frame_size);
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
             std.debug.assert(samples[i].len == samples[i + 1].len);

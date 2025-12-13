@@ -143,7 +143,7 @@ pub fn writeHeader(
         break :blk std.math.isPowerOfTwo(rem) and @ctz(rem) <= 5 and @ctz(rem) >= 2;
     }) {
         try self.writeBits(4, @ctz(block_size / 144));
-    } else if (block_size <= 0x100) {
+    } else if (block_size < 0x100) {
         try self.writeBits(4, 0b0110);
         uncommon_block_size = .byte;
     } else {

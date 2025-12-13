@@ -20,7 +20,7 @@ pub fn main(
     // Flac File Writer
     // var flac_enc: flac.Encoder = .{ .writer = &file_writer.interface };
     // try flac_enc.initSamples(allocator, streaminfo.bit_depth, option.frame_size);
-    const flac_enc: flac.Encoder = try .init(allocator, &file_writer.interface, .test_default, streaminfo.bit_depth, option.frame_size);
+    const flac_enc: flac.Encoder = try .init(allocator, &file_writer.interface, .default(streaminfo.channels), streaminfo.bit_depth);
     defer flac_enc.deinit(allocator, streaminfo.bit_depth);
 
     // Skip Signature and Streaminfo
@@ -69,7 +69,7 @@ fn encode(
         const samples_read = (try wav.fillSamplesMd5(wav_sample_buf, option.frame_size, samples, &md5)) orelse break;
 
         const bytes_written =
-            try flac_enc.writeFrame(allocator, samples_read, frame_idx, streaminfo.*);
+            try flac_enc.writeFrame(samples_read, frame_idx, streaminfo.*);
 
         // Update min/max framesize in streaminfo
         streaminfo.updateFrameSize(bytes_written);

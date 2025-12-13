@@ -15,13 +15,12 @@ pub fn midSideChannels(
     right: []const i32,
     mid_dest: []i32,
     side_dest: []SampleT,
-) std.meta.Tuple(&.{[]const i32, []const SampleT}) {
+) void {
     std.debug.assert(left.len == right.len and right.len == mid_dest.len and mid_dest.len == side_dest.len);
     for (left, right, mid_dest, side_dest) |l, r, *m, *s| {
         m.* = midSample(l, r);
         s.* = sideSample(SampleT, l, r);
     }
-    return .{mid_dest, side_dest};
 }
 /// Produce a slice of mid_channel \
 /// \

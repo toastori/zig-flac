@@ -23,58 +23,86 @@ pub const HEADER_SIZE = 4 + 1 + 3 + 34;
 // -- Members --
 
 // Settings
-config: Config = .test_default,
+config: Config,
 
 // Context
 writer: *std.Io.Writer,
 
 // One time allocation
-mid_samples: [*]i32 = undefined, // Conditional
-side_samples: [*]i32 = undefined, // Conditional
-side_samples_wide: [*]i64 = undefined, // Conditional
-max_frame_size: u16,
+/// Channel 1~8, or stereo: [left right mid side(conditional)] + raw[mid side(conditional)]
+residuals: [8][*]i32 = undefined,
+side_samples_64: [*]i64 = undefined, // Conditional
+
+const MID_RES = 2;
+const MID_RAW = 4;
+const SIDE_RES = 3;
+const SIDE_RAW = 5;
 
 // -- Initializer --
 
 /// Allocate one time allocated buffers used internally conditionally
-pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, setting: Config, bit_depth: u8, max_frame_size: u16) error{OutOfMemory}!FlacEncoder {
-    var result: FlacEncoder = .{ .writer = writer, .max_frame_size = max_frame_size };
-    if (setting.stereo == .indep) return result;
-    result.mid_samples = (try allocator.alloc(i32, max_frame_size)).ptr;
-    errdefer allocator.free(result.mid_samples[0..max_frame_size]);
-    if (bit_depth < 32)
-        result.side_samples = (try allocator.alloc(i32, max_frame_size)).ptr
-    else
-        result.side_samples_wide = (try allocator.alloc(i64, max_frame_size)).ptr;
+pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, config: Config, bit_depth: u8) error{OutOfMemory}!FlacEncoder {
+    var result: FlacEncoder = .{ .writer = writer, .config = config };
+
+    switch (config.channels) {
+        _ => {
+            const channels = config.channels.getNum();
+            const slice = try allocator.alloc(i32, config.block_size * channels);
+            for (0..channels) |i| {
+                result.residuals[i] = slice[config.block_size * i ..].ptr;
+            }
+        },
+        .stereo_auto => {
+            const channels_32: u8 = if (bit_depth == 32) 5 else 6;
+            const slice_32 = try allocator.alloc(i32, config.block_size * channels_32);
+            errdefer allocator.free(slice_32);
+            if (bit_depth == 32) {
+                result.side_samples_64 = (try allocator.alloc(i64, config.block_size)).ptr;
+            }
+            const idx: []const usize = if (bit_depth == 32)
+                &.{ 0, 1, 2, 3, MID_RAW }
+            else
+                &.{ 0, 1, 2, 3, 4, 5 };
+            for (idx, 0..) |i, c| {
+                result.residuals[i] = slice_32[c * config.block_size ..].ptr;
+            }
+        },
+    }
+
     return result;
 }
 
 /// Clean up allocated slices
-pub fn deinit(self: @This(), allocator: std.mem.Allocator, bit_depth: u6) void {
-    if (self.config.stereo == .indep) return;
-    allocator.free(self.mid_samples[0..self.max_frame_size]);
-    if (bit_depth < 32)
-        allocator.free(self.side_samples[0..self.max_frame_size])
-    else
-        allocator.free(self.side_samples_wide[0..self.max_frame_size]);
+pub fn deinit(self: @This(), allocator: std.mem.Allocator, bit_depth: u8) void {
+    switch (self.config.channels) {
+        _ => allocator.free(self.residuals[0][0 .. self.config.channels.getNum() * self.config.block_size]),
+        else => {
+            const channels_32: u8 = if (bit_depth == 32) 5 else 6;
+            allocator.free(self.residuals[0][0 .. self.config.block_size * channels_32]);
+            if (bit_depth == 32) allocator.free(self.side_samples_64[0..self.config.block_size]);
+        },
+    }
 }
 
 // -- Methods --
 
 /// Write a frame from `MultiChannelIter` with block__size specified \
+/// Only 2 channels are allowed if `config.stereo` != `.indep` \
 /// \
 /// return:
 /// - `Bytes of frame` for updating stream info
 /// - `Error` when writing
 pub fn writeFrame(
     self: @This(),
-    allocator: std.mem.Allocator,
     samples: []const []const i32,
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
-) error{ OutOfMemory, WriteFailed }!u24 {
-    std.debug.assert(samples.len != 0);
-    std.debug.assert(samples[0].len != 0 and samples.len <= self.max_frame_size);
+) error{WriteFailed}!u24 {
+    std.debug.assert(samples.len != 0 and
+        ((samples.len == @intFromEnum(self.config.channels) and @as(u8, @intFromEnum(self.config.channels)) <= 8) or
+            (samples.len == 2 and self.config.channels == .stereo_auto)));
+    std.debug.assert(samples[0].len != 0 and samples.len <= self.config.block_size);
+
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
             std.debug.assert(samples[i].len == samples[i + 1].len);
@@ -83,70 +111,50 @@ pub fn writeFrame(
     var fwriter_buf: [1024]u64 = undefined;
     var fwriter: FrameWriter = .init(self.writer, &fwriter_buf);
 
-    const stereo_mode: StereoType = if (samples.len == 2 and self.config.stereo != .indep)
-        chooseStereoMethod(samples)
-    else
-        .LeftRight;
-
-    const mid, const side, const side_wide = switch (stereo_mode) {
-        .LeftRight => .{ undefined, undefined, undefined },
-        .MidSide => blk: {
-            if (streaminfo.bit_depth == 32) {
-                const m, const s = samples_fn.midSideChannels(i64, samples[0], samples[1], self.mid_samples[0..self.max_frame_size], self.side_samples_wide[0..self.max_frame_size]);
-                break :blk .{ m, undefined, s };
-            } else {
-                const m, const s = samples_fn.midSideChannels(i32, samples[0], samples[1], self.mid_samples[0..self.max_frame_size], self.side_samples[0..self.max_frame_size]);
-                break :blk .{ m, s, undefined };
-            }
-        },
-        else => blk: {
-            if (streaminfo.bit_depth == 32) {
-                const s = samples_fn.sideChannel(i64, samples[0], samples[1], self.side_samples_wide[0..self.max_frame_size]);
-                break :blk .{ undefined, undefined, s };
-            } else {
-                const s = samples_fn.sideChannel(i32, samples[0], samples[1], self.side_samples[0..self.max_frame_size]);
-                break :blk .{ undefined, s, undefined };
-            }
-        },
-    };
+    const sample_size: u6 = streaminfo.bit_depth;
+    const block_size: u16 = @intCast(samples[0].len);
+    const ch_type, const subframe_types = self.processChannels(samples, streaminfo.bit_depth);
 
     // Write header start
     try fwriter.writeHeader(
         true,
-        @intCast(samples[0].len),
+        block_size,
         streaminfo.sample_rate,
-        if (stereo_mode == .LeftRight)
+        if (ch_type == .Indep)
             .simple(streaminfo.channels)
         else
-            @enumFromInt(@intFromEnum(stereo_mode) + 7),
-        streaminfo.bit_depth,
+            @enumFromInt(@intFromEnum(ch_type) + 7),
+        sample_size,
         frame_idx,
     );
 
-    // Write a subframe per channel
-    switch (stereo_mode) {
-        .LeftRight => for (0..streaminfo.channels) |i| {
-            try self.writeChannelSubframe(i32, allocator, samples[i], &fwriter, streaminfo.bit_depth);
-        },
-        .LeftSide => { // Left
-            try self.writeChannelSubframe(i32, allocator, samples[0], &fwriter, streaminfo.bit_depth);
-        },
-        .MidSide => { // Mid
-            try self.writeChannelSubframe(i32, allocator, mid, &fwriter, streaminfo.bit_depth);
-        },
-        else => {},
-    }
-
-    if (stereo_mode != .LeftRight) { // Side
-        if (streaminfo.bit_depth < 32) {
-            try self.writeChannelSubframe(i32, allocator, side, &fwriter, streaminfo.bit_depth + 1);
-        } else {
-            try self.writeChannelSubframe(i64, allocator, side_wide, &fwriter, streaminfo.bit_depth + 1);
+    if (ch_type == .Indep) {
+        for (samples, subframe_types[0..samples.len]) |s, ty| {
+            try writeChannelSubframe(i32, ty, s, &fwriter, streaminfo.bit_depth);
         }
+        // Close subframe
+        try fwriter.writeCrc16();
+        return fwriter.bytes_written;
     }
 
-    if (stereo_mode == .SideRight) { // Right
-        try self.writeChannelSubframe(i32, allocator, samples[1], &fwriter, streaminfo.bit_depth);
+    const Ch = enum { left, right, mid, side };
+    const channels: [2]Ch = switch (ch_type) {
+        .LeftSide => .{ .left, .side },
+        .SideRight => .{ .side, .right },
+        .MidSide => .{ .mid, .side },
+        else => unreachable,
+    };
+
+    for (channels) |ch| {
+        switch (ch) {
+            .left => try writeChannelSubframe(i32, subframe_types[0], samples[0], &fwriter, sample_size),
+            .right => try writeChannelSubframe(i32, subframe_types[1], samples[1], &fwriter, sample_size),
+            .mid => try writeChannelSubframe(i32, subframe_types[MID_RES], self.residuals[MID_RAW][0..block_size], &fwriter, sample_size),
+            .side => if (streaminfo.bit_depth == 32)
+                try writeChannelSubframe(i64, subframe_types[SIDE_RES], self.side_samples_64[0..block_size], &fwriter, sample_size + 1)
+            else
+                try writeChannelSubframe(i32, subframe_types[SIDE_RES], self.residuals[SIDE_RAW][0..block_size], &fwriter, sample_size + 1),
+        }
     }
 
     // Close subframe
@@ -156,89 +164,119 @@ pub fn writeFrame(
 
 /// Write subframe of a channel (any kind: single, mid, side)
 fn writeChannelSubframe(
-    self: @This(),
     SampleT: type,
-    allocator: std.mem.Allocator,
+    subframe_type: SubframeType,
     samples: []const SampleT,
     fwriter: *FrameWriter,
     sample_size: u6,
-) error{ OutOfMemory, WriteFailed }!void {
-    std.debug.assert(samples.len != 0);
-    const subframe_type = try self.chooseSubframeEncoding(
-        SampleT,
-        allocator,
-        sample_size,
-        samples,
-    );
-
+) error{WriteFailed}!void {
     switch (subframe_type) {
         .Constant => try fwriter.writeConstantSubframe(sample_size, samples[0]),
         .Verbatim => try fwriter.writeVerbatimSubframe(SampleT, sample_size, samples),
         .Fixed => |f| {
-            defer allocator.free(f.residuals);
             try fwriter.writeFixedSubframe(sample_size, f.residuals, f.order, f.rice_config);
         },
         // else => unreachable, // TODO
     }
 }
 
-// Copy from flake
-/// Evaluate best method to encode Stereo frame \
-/// Channels must be 2
-fn chooseStereoMethod(samples: []const []const i32) StereoType {
-    const fp = @import("fixed_prediction.zig");
+fn processChannels(
+    self: @This(),
+    samples: []const []const i32,
+    sample_size: u8,
+) std.meta.Tuple(&.{ ChType, [8]SubframeType }) {
+    const block_size = samples[0].len;
 
-    std.debug.assert(samples.len == 2);
-    const frame_size: u16 = @intCast(samples[0].len);
+    var ch_subframe_types: [8]SubframeType = undefined;
+    const ch_type: ChType = switch (self.config.channels) {
+        _ => blk: {
+            for (samples, self.residuals[0..samples.len], ch_subframe_types[0..samples.len]) |s, r, *ty| {
+                _, ty.* = chooseSubframeEncoding(i32, sample_size, self.config, s, r[0..block_size]);
+            }
+            break :blk .Indep;
+        },
+        else => blk: {
+            var frame_sizes: [4]u64 = undefined;
 
-    var sum: [4]u64 = .{ 0, 0, 0, 0 };
-    const LEFT, const RIGHT, const MID, const SIDE = .{ 0, 1, 2, 3 };
+            // Generate Mid and Side Channels
+            if (sample_size == 32) {
+                samples_fn.midSideChannels(
+                        i64,
+                        samples[0],
+                        samples[1],
+                        self.residuals[MID_RAW][0..block_size],
+                        self.side_samples_64[0..block_size],
+                    );
+            } else {
+                samples_fn.midSideChannels(
+                    i32,
+                    samples[0],
+                    samples[1],
+                    self.residuals[MID_RAW][0..block_size],
+                    self.residuals[SIDE_RAW][0..block_size],
+                );
+            }
 
-    const left = samples[0];
-    const right = samples[1];
+            const left_right_mid: [3][]const i32 = .{ samples[0], samples[1], self.residuals[MID_RAW][0..block_size] };
 
+            // Left Right Mid
+            for (0..3) |i| {
+                frame_sizes[i], ch_subframe_types[i] = chooseSubframeEncoding(
+                    i32,
+                    sample_size,
+                    self.config,
+                    left_right_mid[i],
+                    self.residuals[i][0..block_size],
+                );
+            }
+            // Side
+            frame_sizes[SIDE_RES], ch_subframe_types[SIDE_RES] = if (sample_size == 32)
+                chooseSubframeEncoding(
+                    i64,
+                    sample_size,
+                    self.config,
+                    self.side_samples_64[0..block_size],
+                    self.residuals[SIDE_RES][0..block_size],
+                )
+            else
+                chooseSubframeEncoding(
+                    i32,
+                    sample_size,
+                    self.config,
+                    self.residuals[SIDE_RAW][0..block_size],
+                    self.residuals[SIDE_RES][0..block_size],
+                );
 
-    for (2..left.len) |i| {
-        const l: i64 = fp.calcResidual(i32, i64, left, i, 2);
-        const r: i64 = fp.calcResidual(i32, i64, right, i, 2);
+            const sum: [4]u64 = .{
+                frame_sizes[0] + frame_sizes[1], // Left Right
+                frame_sizes[0] + frame_sizes[SIDE_RES], // Left Side
+                frame_sizes[SIDE_RES] + frame_sizes[1], // Side Right
+                frame_sizes[MID_RES] + frame_sizes[SIDE_RES], // Mid Side
+            };
 
-        sum[LEFT] += @abs(l);
-        sum[RIGHT] += @abs(r);
-        sum[MID] += @abs(l + r >> 1);
-        sum[SIDE] += @abs(l - r);
-    }
-    for (&sum) |*s| {
-        _, const bits = rice_code.findOptimalParamEstimate(2 * s.*, frame_size);
-        s.* = bits;
-    }
-
-    const score: [4]u64 = .{
-        sum[LEFT] + sum[RIGHT], // Left Right
-        sum[LEFT] + sum[SIDE], // Left Side
-        sum[SIDE] + sum[RIGHT], // Side Right
-        sum[MID] + sum[SIDE], // Mid Side
+            break :blk @enumFromInt(std.mem.indexOfMin(u64, &sum));
+        },
     };
-
-    return @enumFromInt(std.mem.indexOfMin(u64, &score));
+    return .{ ch_type, ch_subframe_types };
 }
 
 /// Evaluate best encoding for a subframe
 fn chooseSubframeEncoding(
-    self: @This(),
     SampleT: type,
-    allocator: std.mem.Allocator,
-    sample_size: u6,
+    sample_size: u8,
+    config: Config,
     samples: []const SampleT,
-) error{OutOfMemory}!SubframeType {
+    residuals_dest: []i32,
+) std.meta.Tuple(&.{ u64, SubframeType }) {
     // -- Constant -- (First priority)
     if (std.mem.allEqual(SampleT, samples[1..], samples[0]))
-        return .{ .Constant = {} };
+        return .{ @bitSizeOf(SampleT), .{ .Constant = {} } };
+
+    var subframe_type: SubframeType = .{ .Verbatim = {} }; // Default fallback to Verbatim
+    var subframe_size: u64 = @as(usize, samples.len) * @bitSizeOf(SampleT); // Default fallback to Verbatim
 
     // -- Verbatim -- (Least priority)
-    if (samples.len <= fixed_prediction.MAX_ORDER) return .{ .Verbatim = {} };
-
-    const verbatim_size: usize = @as(usize, samples.len) * @bitSizeOf(SampleT);
-    var subframe_type: SubframeType = .{ .Verbatim = {} }; // Default fallback to Verbatim
+    if (samples.len <= fixed_prediction.MAX_ORDER) return .{ subframe_size, subframe_type };
 
     // -- Fixed Prediction --
     const best_fixed_order = if (sample_size < 28)
@@ -252,30 +290,28 @@ fn chooseSubframeEncoding(
             SampleT,
             samples,
             true,
-        ) orelse return subframe_type;
+        ) orelse return .{ subframe_size, subframe_type };
 
     // Prepare residuals
-    const residuals = try allocator.alloc(i32, samples.len);
-    samples_fn.fixedResiduals(SampleT, best_fixed_order, samples, residuals);
+    samples_fn.fixedResiduals(SampleT, best_fixed_order, samples, residuals_dest);
 
     const fixed_size, const rice_config = rice_code.calcRiceParamFixed(
-        residuals,
-        self.config.max_rice_order,
-        self.config.max_rice_param,
+        residuals_dest,
+        config.max_rice_order,
+        config.max_rice_param,
         sample_size,
         best_fixed_order,
     );
-    if (fixed_size < verbatim_size) {
+    if (fixed_size < subframe_size) {
+        subframe_size = fixed_size;
         subframe_type = .{ .Fixed = .{
             .order = best_fixed_order,
-            .residuals = residuals,
+            .residuals = residuals_dest,
             .rice_config = rice_config,
         } };
-    } else {
-        allocator.free(residuals);
     }
 
-    return subframe_type;
+    return .{ subframe_size, subframe_type };
 }
 
 /// Skip signature and Streaminfo by writing 0s \
@@ -324,8 +360,10 @@ pub fn writeVorbisComment(self: @This(), is_last_metadata: bool) error{WriteFail
 // -- Types --
 
 pub const Config = struct {
+    /// (maximum) block size
+    block_size: u16,
     prediction: Prediction,
-    stereo: Stereo,
+    channels: Stereo,
     /// Rice partition order: value [0, 15] ([0, 8] for subset)
     max_rice_order: u4,
     /// Rice param limit: value [0, 30] ([0, 14] for rice1 only)
@@ -349,18 +387,40 @@ pub const Config = struct {
 
     /// Stereo decorrelation option
     pub const Stereo = enum(u8) {
-        indep,
         // left_side,
         // side_right,
         // mid_side,
-        auto,
+        stereo_auto = 9,
+        _,
+
+        pub fn fromNum(channels: u8) Stereo {
+            return switch (channels) {
+                1...8 => @enumFromInt(channels),
+                else => unreachable,
+            };
+        }
+
+        pub fn getNum(self: Stereo) u8 {
+            return switch (self) {
+                _ => @intFromEnum(self),
+                else => unreachable,
+            };
+        }
     };
 
-    pub const test_default: @This() = .{ .prediction = .fixed, .stereo = .auto, .max_rice_order = 8, .max_rice_param = rice_code.MAX_PARAM };
+    pub fn default(channels: u8) @This() {
+        return .{
+            .block_size = 4096,
+            .prediction = .fixed,
+            .channels = if (channels == 2) .stereo_auto else .fromNum(channels),
+            .max_rice_order = 8,
+            .max_rice_param = rice_code.MAX_PARAM,
+        };
+    }
 };
 
-const StereoType = enum(u8) {
-    LeftRight = 0,
+const ChType = enum(u8) {
+    Indep = 0,
     LeftSide = 1,
     SideRight = 2,
     MidSide = 3,

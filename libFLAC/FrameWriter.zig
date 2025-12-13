@@ -34,8 +34,8 @@ pub fn init(writer: *std.Io.Writer, buffer: []u64) @This() {
 /// Write number of bits to the file (big endian) \
 /// Use `writeBitsWrapped()` if writing signed negative integers
 pub fn writeBits(self: *@This(), size: u8, value: u64) error{WriteFailed}!void {
-    std.debug.assert(size != 0 and size <= 64);
-    
+    std.debug.assert(size <= 64);
+    if (size == 0) return;
     const remain_bits = W_BIT - self.bit_end;
     if (size < remain_bits) {
         self.buffer[self.end] <<= @intCast(size);

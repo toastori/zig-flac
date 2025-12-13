@@ -73,7 +73,8 @@ pub fn writeFrame(
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
 ) error{ OutOfMemory, WriteFailed }!u24 {
-    std.debug.assert(samples.len != 0 and samples[0].len != 0);
+    std.debug.assert(samples.len != 0);
+    std.debug.assert(samples[0].len != 0 and samples.len <= 65535);
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         for (0..samples.len - 1) |i|
             std.debug.assert(samples[i].len == samples[i + 1].len);
@@ -82,9 +83,8 @@ pub fn writeFrame(
     var fwriter_buf: [1024]u64 = undefined;
     var fwriter: FrameWriter = .init(self.writer, &fwriter_buf);
 
-    const frame_size: u16 = @intCast(samples[0].len);
     const stereo_mode: StereoType = if (samples.len == 2 and self.config.stereo != .indep)
-        chooseStereoMethod(samples, frame_size)
+        chooseStereoMethod(samples)
     else
         .LeftRight;
 
@@ -113,7 +113,7 @@ pub fn writeFrame(
     // Write header start
     try fwriter.writeHeader(
         true,
-        frame_size,
+        @intCast(samples[0].len),
         streaminfo.sample_rate,
         if (stereo_mode == .LeftRight)
             .simple(streaminfo.channels)
@@ -185,13 +185,11 @@ fn writeChannelSubframe(
 // Copy from flake
 /// Evaluate best method to encode Stereo frame \
 /// Channels must be 2
-fn chooseStereoMethod(
-    samples: []const []const i32,
-    frame_size: u16,
-) StereoType {
+fn chooseStereoMethod(samples: []const []const i32) StereoType {
     const fp = @import("fixed_prediction.zig");
 
     std.debug.assert(samples.len == 2);
+    const frame_size: u16 = @intCast(samples[0].len);
 
     var sum: [4]u64 = .{ 0, 0, 0, 0 };
     const LEFT, const RIGHT, const MID, const SIDE = .{ 0, 1, 2, 3 };
@@ -229,7 +227,7 @@ fn chooseSubframeEncoding(
     self: @This(),
     SampleT: type,
     allocator: std.mem.Allocator,
-    sample_size: u8,
+    sample_size: u6,
     samples: []const SampleT,
 ) error{OutOfMemory}!SubframeType {
     // -- Constant -- (First priority)
@@ -329,9 +327,9 @@ pub const Config = struct {
     prediction: Prediction,
     stereo: Stereo,
     /// Rice partition order: value [0, 15] ([0, 8] for subset)
-    max_rice_order: u8,
+    max_rice_order: u4,
     /// Rice param limit: value [0, 30] ([0, 14] for rice1 only)
-    max_rice_param: u8,
+    max_rice_param: u5,
 
     /// linear prediction
     /// - Lax within range [1, 32]

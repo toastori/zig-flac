@@ -119,7 +119,7 @@ pub inline fn writeCrc16(self: *@This()) error{WriteFailed}!void {
 pub fn writeHeader(
     self: *@This(),
     is_fixed_size: bool,
-    block_size: u32,
+    block_size: u16,
     sample_rate: u24, // 0 if `Streaminfo.sample_rate` is consistant across the file
     channels: Channels,
     bit_depth: u8, // 0 if `Streaminfo.bit_depth` is consistant across the file

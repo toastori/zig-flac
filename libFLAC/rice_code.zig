@@ -2,8 +2,8 @@ const std = @import("std");
 const sample_iter = @import("samples.zig");
 const FixedResidualIter = sample_iter.FixedResidualIter;
 
-const MAX_PARAM_4BIT: u6 = std.math.maxInt(u4) - 1;
-const MAX_PARAM_5BIT: u6 = std.math.maxInt(u5) - 1;
+const MAX_PARAM_4BIT: u5 = std.math.maxInt(u4) - 1;
+const MAX_PARAM_5BIT: u5 = std.math.maxInt(u5) - 1;
 pub const MAX_PARAM = MAX_PARAM_5BIT;
 pub const ESC_PART = std.math.maxInt(u5);
 const MAX_ORDER = 8; // Subset now
@@ -18,11 +18,11 @@ pub const RiceCode = struct {
     /// 1 ++ remainder of result
     rem: u32,
 
-    pub fn make(param: u6, value: i64) @This() {
-        const zigzag: u64 = calcZigzag(value);
+    pub fn make(param: u5, value: i32) @This() {
+        const zigzag: u32 = calcZigzag(value);
         return .{
             .quo = @intCast(zigzag >> param),
-            .rem = @intCast(zigzag & ((@as(u64, 1) << param) - 1)),
+            .rem = @intCast(zigzag & ((@as(u32, 1) << param) - 1)),
         };
     }
 };
@@ -30,7 +30,7 @@ pub const RiceCode = struct {
 pub const RiceConfig = struct {
     method: enum(u6) { FOUR = 0, FIVE = 1 } = .FOUR,
     part_order: u6 = undefined,
-    params: [MAX_PART]u6 = undefined,
+    params: [MAX_PART]u5 = undefined,
 };
 
 // -- Functions --
@@ -88,8 +88,9 @@ fn calcRiceParam(
     return .{ optimal_bit_count, optimal_config };
 }
 
-inline fn calcZigzag(value: i64) u64 {
-    return @bitCast(if (value < 0) value * -2 - 1 else value * 2);
+inline fn calcZigzag(value: i32) u32 {
+    // return if (value < 0) @as(u32, @bitCast(value)) *% 2 - 1 else @as(u32, @bitCast(value)) *% 2;
+    return @bitCast((value << 1) ^ (value >> 31));
 }
 
 // Copied from flake
@@ -177,7 +178,7 @@ pub fn findOptimalParamEstimate(part_sum: u64, part_size: usize) std.meta.Tuple(
 // Copied from flake
 /// Higher compression ratio but slower
 /// return `.{ optimal_param, optimal_bit_count }`
-pub fn findOptimalParamSearch(part_sum: u64, part_size: usize, max_param: u8) std.meta.Tuple(&.{ u6, usize }) {
+pub fn findOptimalParamSearch(part_sum: u64, part_size: usize, max_param: u8) std.meta.Tuple(&.{ u5, usize }) {
     std.debug.assert(max_param == MAX_PARAM_4BIT or max_param == MAX_PARAM_5BIT);
 
     var bit_counts: [MAX_PARAM + 1]usize = undefined;
@@ -186,7 +187,7 @@ pub fn findOptimalParamSearch(part_sum: u64, part_size: usize, max_param: u8) st
         bit_counts[param] = partEncodeCount(part_sum, part_size, @intCast(param));
 
     // Find best param among the bit counts
-    const optimal_param: u6 = @intCast(std.mem.indexOfMin(usize, bit_counts[0..bit_counts_len]));
+    const optimal_param: u5 = @intCast(std.mem.indexOfMin(usize, bit_counts[0..bit_counts_len]));
     const optimal_bit_count: usize = bit_counts[optimal_param];
 
     return .{ optimal_param, optimal_bit_count };

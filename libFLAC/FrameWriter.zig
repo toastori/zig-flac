@@ -308,7 +308,7 @@ pub fn writeFixedSubframe(
     }
 }
 
-pub fn writeRicePart(self: *@This(), residuals: []i32, param: u6) error{WriteFailed}!void {
+pub fn writeRicePart(self: *@This(), residuals: []i32, param: u5) error{WriteFailed}!void {
     for (residuals) |res| {
         var rice: RiceCode = .make(param, res);
         // Write Quotient

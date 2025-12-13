@@ -20,8 +20,8 @@ pub const NEO_COEFF: [5][4]i32 = .{
 
 /// Calculate the n-th residual
 pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize) R {
-    if (T != i32 and T != i64) @compileError("neoCalcResidual: expect T as i32 or i64");
-    if (R != i32 and R != i64) @compileError("neoCalcResidual: expect R as i32 or i64");
+    if (T != i32 and T != i64) @compileError("calcResidual: expect T as i32 or i64");
+    if (R != i32 and R != i64) @compileError("calcResidual: expect R as i32 or i64");
     std.debug.assert(n >= order);
     var prediction: T = 0;
     for (0..order, n - order..) |o, i| {

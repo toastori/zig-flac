@@ -4,6 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const strip = b.option(bool, "strip", "strip executable output (default: false)") orelse false;
+    const full_debug = b.option(bool, "full_debug", "emit extreme code model") orelse false;
 
     // Define Options
     const option = b.addOptions();
@@ -21,6 +22,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("libFLAC/root.zig"),
             .target = target,
             .optimize = optimize,
+            .code_model = if (full_debug) .extreme else .default,
             .strip = strip,
         },
     );

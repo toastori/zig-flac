@@ -293,7 +293,7 @@ fn chooseSubframeEncoding(
         ) orelse return .{ subframe_size, subframe_type };
 
     // Prepare residuals
-    samples_fn.fixedResiduals(SampleT, best_fixed_order, samples, residuals_dest);
+    fixed_prediction.calcResiduals(SampleT, samples, residuals_dest, best_fixed_order);
 
     const fixed_size, const rice_config = rice_code.calcRiceParamFixed(
         residuals_dest,

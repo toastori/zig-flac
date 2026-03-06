@@ -30,6 +30,59 @@ pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize
     return @intCast(samples[n] - prediction);
 }
 
+pub fn calcResiduals(SampleT: type, samples: []const SampleT, dest: []i32, order: usize) void {
+    if (SampleT != i32 and SampleT != i64) @compileError("calcResiduals: expect T as i32 or i64");
+    std.debug.assert(samples.len == dest.len);
+    const mm_len = std.simd.suggestVectorLength(SampleT) orelse 1;
+    const Vec = @Vector(mm_len, SampleT);
+
+    const coeff: [4]Vec = .{
+        @splat(NEO_COEFF[order][0]),
+        @splat(NEO_COEFF[order][1]),
+        @splat(NEO_COEFF[order][2]),
+        @splat(NEO_COEFF[order][3]),
+    };
+    var curr_samples: Vec = undefined;
+    var prev_samples: [4]Vec = @splat(@splat(0));
+    var mul_samples: [4]Vec = undefined;
+    var sums_temps: [2]Vec = undefined;
+    var prediction: Vec = undefined;
+
+    for (0..order) |o| dest[o] = @intCast(samples[o]);
+
+    var i = order;
+    while (i < samples.len) : (i += mm_len) {
+        for (&prev_samples, i - order..) |*p, s| p.* = samples.ptr[s..][0..mm_len].*; // load prev samples
+        curr_samples = samples.ptr[i..][0..mm_len].*; // load samples
+
+        for (&mul_samples, prev_samples, coeff) |*m, p, c| m.* = p *% c; // multiply prev samples by coefficient
+        // sum up to prediction
+        sums_temps[0] = mul_samples[0] +% mul_samples[1];
+        sums_temps[1] = mul_samples[2] +% mul_samples[3];
+        prediction = sums_temps[0] +% sums_temps[1];
+        //result
+        const result = curr_samples -% prediction;
+
+        if (SampleT == i32) {
+            if (mm_len == 1 or samples.len - i > mm_len) {
+                dest[i..][0..mm_len].* = result;
+            } else {
+                const array_form: [mm_len]SampleT = @bitCast(result);
+                @memcpy(dest[i..][0..samples.len - i], array_form[0..samples.len - i]);
+            }
+        } else {
+            const mm_len_32 = std.simd.suggestVectorLength(i32) orelse 1;
+            const result_32: @Vector(mm_len_32, i32) = @bitCast(result);
+            const di_result: [2][mm_len]i32 = @bitCast(std.simd.deinterlace(2, result_32));
+            if (mm_len == 1 or samples.len - i > mm_len) {
+                dest[i..][0..mm_len].* = di_result[0];
+            } else {
+                @memcpy(dest[i..][0..samples.len - i], di_result[0][0..samples.len - i]);
+            }
+        }
+    }
+}
+
 /// Check if the residual is in range
 pub inline fn inRange(num: i64) bool {
     return num <= std.math.maxInt(i32) or num > std.math.minInt(i32);

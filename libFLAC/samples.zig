@@ -53,15 +53,3 @@ inline fn midSample(left: i32, right: i32) i32 {
 inline fn sideSample(SampleT: type, left: i32, right: i32) SampleT {
     return left - right;
 }
-
-/// Produce a slice of fixed prediction residuals
-pub fn fixedResiduals(SampleT: type, order: u8, samples: []const SampleT, dest: []i32) void {
-    const fp = @import("fixed_prediction.zig");
-    if (SampleT != i32 and SampleT != i64) @compileError("fixedResiduals: expect SampleT as i32 or i64");
-    std.debug.assert(samples.len == dest.len);
-
-    for (samples[0..order], dest[0..order]) |s, *d|
-        d.* = @intCast(s);
-    for (dest[order..], order..) |*d, i|
-        d.* = fp.calcResidual(SampleT, i32, samples, i, order);
-}

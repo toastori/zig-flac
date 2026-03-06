@@ -93,12 +93,13 @@ pub inline fn inRange(num: i64) bool {
 pub fn bestOrder(
     SampleT: type,
     samples: []const SampleT,
+    sample_size: usize,
     comptime check_range: bool,
 ) ?u8 {
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
 
-    var total_error: [5]u64 = @splat(0);
+    var total_error: [5]u64 = .{ 0, sample_size, sample_size * 2, sample_size * 3, sample_size * 4 };
     for (0..5) |order| {
         var i: usize = order;
         while (i < samples.len) : (i += 1) {

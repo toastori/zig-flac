@@ -279,16 +279,19 @@ fn chooseSubframeEncoding(
     if (samples.len <= fixed_prediction.MAX_ORDER) return .{ subframe_size, subframe_type };
 
     // -- Fixed Prediction --
+
     const best_fixed_order = if (sample_size < 28)
         fixed_prediction.bestOrder(
             SampleT,
             samples,
+            sample_size,
             false,
         ) orelse unreachable
     else
         fixed_prediction.bestOrder(
             SampleT,
             samples,
+            sample_size,
             true,
         ) orelse return .{ subframe_size, subframe_type };
 

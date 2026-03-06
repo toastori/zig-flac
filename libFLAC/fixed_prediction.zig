@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const sample_iter = @import("samples.zig");
 
 const SampleIter = sample_iter.SampleIter;
@@ -74,10 +75,11 @@ pub fn calcResiduals(SampleT: type, samples: []const SampleT, dest: []i32, order
             const mm_len_32 = std.simd.suggestVectorLength(i32) orelse 1;
             const result_32: @Vector(mm_len_32, i32) = @bitCast(result);
             const di_result: [2][mm_len]i32 = @bitCast(std.simd.deinterlace(2, result_32));
+            const di_target = if (comptime builtin.cpu.arch.endian() == .little) 0 else 1;
             if (mm_len == 1 or samples.len - i > mm_len) {
-                dest[i..][0..mm_len].* = di_result[0];
+                dest[i..][0..mm_len].* = di_result[di_target];
             } else {
-                @memcpy(dest[i..][0..samples.len - i], di_result[0][0..samples.len - i]);
+                @memcpy(dest[i..][0..samples.len - i], di_result[di_target][0..samples.len - i]);
             }
         }
     }

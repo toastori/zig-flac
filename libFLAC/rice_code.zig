@@ -163,18 +163,6 @@ fn calcOptimalParams(
     return .{ all_bits + (@intFromEnum(config.method) + 4) * part_count, config };
 }
 
-// Copied from Cuetools
-/// Lower compression ratio but faster
-/// return `.{ optimal_param, optimal_bit_count }`
-pub fn findOptimalParamEstimate(part_sum: u64, part_size: u16) std.meta.Tuple(&.{u6, usize}) {
-    std.debug.assert(part_size != 0);
-    if (part_sum == 0) return .{ ESC_PART, 5 };
-    const optimal_param = std.math.log2_int(u64, part_sum) -| std.math.log2_int(u64, part_size);
-    const optimal_bit_count = partEncodeCount(part_sum, part_size, optimal_param);
-
-    return .{ @intCast(optimal_param), optimal_bit_count };
-}
-
 // Copied from flake
 /// Higher compression ratio but slower
 /// return `.{ optimal_param, optimal_bit_count }`

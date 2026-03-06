@@ -52,7 +52,7 @@ pub fn calcResiduals(SampleT: type, samples: []const SampleT, dest: []i32, order
     for (0..order) |o| dest[o] = @intCast(samples[o]);
 
     var i = order;
-    while (i < samples.len) : (i += mm_len) {
+    while (i + mm_len < samples.len) : (i += mm_len) {
         for (&prev_samples, i - order..) |*p, s| p.* = samples.ptr[s..][0..mm_len].*; // load prev samples
         curr_samples = samples.ptr[i..][0..mm_len].*; // load samples
 
@@ -65,23 +65,17 @@ pub fn calcResiduals(SampleT: type, samples: []const SampleT, dest: []i32, order
         const result = curr_samples -% prediction;
 
         if (SampleT == i32) {
-            if (mm_len == 1 or samples.len - i > mm_len) {
-                dest[i..][0..mm_len].* = result;
-            } else {
-                const array_form: [mm_len]SampleT = @bitCast(result);
-                @memcpy(dest[i..][0..samples.len - i], array_form[0..samples.len - i]);
-            }
+            dest[i..][0..mm_len].* = result;
         } else {
             const mm_len_32 = std.simd.suggestVectorLength(i32) orelse 1;
             const result_32: @Vector(mm_len_32, i32) = @bitCast(result);
             const di_result: [2][mm_len]i32 = @bitCast(std.simd.deinterlace(2, result_32));
             const di_target = if (comptime builtin.cpu.arch.endian() == .little) 0 else 1;
-            if (mm_len == 1 or samples.len - i > mm_len) {
-                dest[i..][0..mm_len].* = di_result[di_target];
-            } else {
-                @memcpy(dest[i..][0..samples.len - i], di_result[di_target][0..samples.len - i]);
-            }
+            dest[i..][0..mm_len].* = di_result[di_target];
         }
+    }
+    while (i < samples.len) : (i += 1) {
+        dest[i] = calcResidual(SampleT, i32, samples, i, order);
     }
 }
 

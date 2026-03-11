@@ -146,7 +146,7 @@ fn calcOptimalParams(
     var part_size: u16 = (blk_size >> part_order) - pred_order;
     for (0..part_count) |i| {
         const optimal_param, const optimal_bit_count =
-            findOptimalParamSearch(sums[i], part_size, max_param);
+            findOptimalParam(sums[i], part_size, max_param);
         config.params[i] = optimal_param;
         all_bits += optimal_bit_count;
 
@@ -155,33 +155,43 @@ fn calcOptimalParams(
     // Decide to extend rice method
     if (max_param > MAX_PARAM_4BIT) {
         for (config.params[0..part_count]) |param| {
-            if (param <= MAX_PARAM_4BIT) continue;
-            config.method = .FIVE;
+            if (param > MAX_PARAM_4BIT) config.method = .FIVE;
         }
     }
 
     return .{ all_bits + (@intFromEnum(config.method) + 4) * part_count, config };
 }
 
-// Copied from flake
-/// Higher compression ratio but slower
-/// return `.{ optimal_param, optimal_bit_count }`
-pub fn findOptimalParamSearch(part_sum: u64, part_size: u16, max_param: u5) std.meta.Tuple(&.{ u5, u64 }) {
+pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.meta.Tuple(&.{u5, u64}) {
     std.debug.assert(max_param == MAX_PARAM_4BIT or max_param == MAX_PARAM_5BIT);
+    const mm_len = std.simd.suggestVectorLength(u64) orelse 1;
+    const max_bc_len = 32 / mm_len;
+    const Vec = @Vector(mm_len, u64);
 
-    var bit_counts: [MAX_PARAM + 1]usize = undefined;
-    const bit_counts_len: u5 = max_param + 1;
-    for (0..bit_counts_len) |param|
-        bit_counts[param] = partEncodeCount(part_sum, part_size, @intCast(param));
+    var bit_counts: [max_bc_len]Vec = undefined;
+    const bit_counts_len = max_param + 1;
+    const steps = (max_param + mm_len) / mm_len;
 
-    // Find best param among the bit counts
-    const optimal_param: u5 = @intCast(std.mem.indexOfMin(usize, bit_counts[0..bit_counts_len]));
-    const optimal_bit_count: usize = bit_counts[optimal_param];
+    var param: @Vector(mm_len, u6) = std.simd.iota(u6, mm_len);
+
+    const p_size: Vec = @splat(part_size);
+    const lhs: Vec = @splat(part_sum -% part_size / 2);
+    var temps: [2]Vec = undefined;
+
+    var param_p1: Vec = param + @as(Vec, @splat(1));
+
+    for (0..steps) |step| {
+        temps[0] = p_size * param_p1;
+        temps[1] = lhs >> param;
+        bit_counts[step] = temps[0] +% temps[1];
+
+        param += @splat(mm_len);
+        param_p1 += @splat(mm_len);
+    }
+
+    const bc: [32]u64 = @bitCast(bit_counts);
+    const optimal_param: u5 = @intCast(std.mem.indexOfMin(usize, bc[0..bit_counts_len]));
+    const optimal_bit_count: usize = bc[optimal_param];
 
     return .{ optimal_param, optimal_bit_count };
-}
-
-// Copied from flake
-inline fn partEncodeCount(sum: u64, part_size: u16, param: u6) u64 {
-    return @as(u64, part_size) * @as(u64, param + 1) +% ((sum -% part_size / 2) >> param);
 }

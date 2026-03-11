@@ -165,33 +165,44 @@ fn calcOptimalParams(
 pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.meta.Tuple(&.{u5, u64}) {
     std.debug.assert(max_param == MAX_PARAM_4BIT or max_param == MAX_PARAM_5BIT);
     const mm_len = std.simd.suggestVectorLength(u64) orelse 1;
-    const max_bc_len = 32 / mm_len;
     const Vec = @Vector(mm_len, u64);
 
-    var bit_counts: [max_bc_len]Vec = undefined;
-    const bit_counts_len = max_param + 1;
+    var min_bit_count: Vec = @splat(std.math.maxInt(u64));
+    var min_param: Vec = @splat(std.math.maxInt(u64));
+
     const steps = (max_param + mm_len) / mm_len;
 
-    var param: @Vector(mm_len, u6) = std.simd.iota(u6, mm_len);
+    var param: Vec = std.simd.iota(u64, mm_len);
+    var param_p1: Vec = param + @as(Vec, @splat(1));
 
     const p_size: Vec = @splat(part_size);
+    const ones: Vec = @splat(std.math.maxInt(u64));
+    const mask: Vec = comptime blk: {
+        var mask_tmp: Vec = @splat(0);
+        mask_tmp[mm_len - 1] = std.math.maxInt(u64);
+        break :blk mask_tmp;
+    };
     const lhs: Vec = @splat(part_sum -% part_size / 2);
     var temps: [2]Vec = undefined;
 
-    var param_p1: Vec = param + @as(Vec, @splat(1));
 
     for (0..steps) |step| {
         temps[0] = p_size * param_p1;
-        temps[1] = lhs >> param;
-        bit_counts[step] = temps[0] +% temps[1];
+        temps[1] = lhs >> @intCast(param);
+        var bit_counts = temps[0] +% temps[1];
+        if (step == steps - 1) bit_counts = mask | bit_counts;
+
+        const smaller = bit_counts < min_bit_count;
+        min_param = @select(u64, smaller, param, min_param);
+        min_bit_count = @min(bit_counts, min_bit_count);
 
         param += @splat(mm_len);
         param_p1 += @splat(mm_len);
     }
 
-    const bc: [32]u64 = @bitCast(bit_counts);
-    const optimal_param: u5 = @intCast(std.mem.indexOfMin(usize, bc[0..bit_counts_len]));
-    const optimal_bit_count: usize = bc[optimal_param];
+    const optimal_bit_count: u64 = @reduce(.Min, min_bit_count);
+    const eq_opt_bc: @Vector(mm_len, bool) = min_bit_count == @as(Vec, @splat(optimal_bit_count));
+    const optimal_param: u64 = @reduce(.Min, @select(u64, eq_opt_bc, min_param, ones));
 
-    return .{ optimal_param, optimal_bit_count };
+    return .{ @intCast(optimal_param), optimal_bit_count };
 }

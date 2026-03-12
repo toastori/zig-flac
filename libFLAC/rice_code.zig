@@ -41,7 +41,7 @@ pub fn calcRiceParamFixed(
     max_param: u5,
     bit_depth: u8,
     pred_order: u8,
-) std.meta.Tuple(&.{ usize, RiceConfig }) {
+) std.meta.Tuple(&.{ u64, RiceConfig }) {
     std.debug.assert(residuals.len > pred_order);
     const pred_order_limited: u4 = if (pred_order != 0)
         // log2(a / b)
@@ -62,9 +62,9 @@ fn calcRiceParam(
     max_part_order: u4,
     max_param: u5,
     pred_order: u8,
-) std.meta.Tuple(&.{ usize, RiceConfig }) {
+) std.meta.Tuple(&.{ u64, RiceConfig }) {
     var sums: [MAX_ORDER + 1][MAX_PART]u64 = undefined;
-    var optimal_bit_count: usize = std.math.maxInt(usize);
+    var optimal_bit_count: u64 = std.math.maxInt(usize);
     var optimal_part_order: u6 = undefined;
     var optimal_config: RiceConfig = undefined;
 
@@ -136,11 +136,11 @@ fn calcOptimalParams(
     max_param: u5,
     pred_order: u8,
     sums: *const [MAX_PART]u64,
-) std.meta.Tuple(&.{ usize, RiceConfig }) {
+) std.meta.Tuple(&.{ u64, RiceConfig }) {
     std.debug.assert(pred_order <= 4);
 
     const part_count: usize = @as(usize, 1) << part_order;
-    var all_bits: usize = 0;
+    var all_bits: u64 = 0;
     var config: RiceConfig = .{.part_order = part_order};
 
     var part_size: u16 = (blk_size >> part_order) - pred_order;

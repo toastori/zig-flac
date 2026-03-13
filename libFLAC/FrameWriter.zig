@@ -279,10 +279,10 @@ pub fn writeFixedSubframe(
     var remain_residuals = residuals[order..];
     var part_size = (residuals.len >> rice_config.part_order) - order;
     for (rice_config.params[0..part_count]) |param| { // Partition
+        const part_residuals = remain_residuals[0..part_size];
+
         // Write rice param
         try self.writeBits(param_len, param);
-
-        const part_residuals = remain_residuals[0..part_size];
 
         if (param == escape_code) { // Escaped
             @branchHint(.cold);
@@ -297,16 +297,19 @@ pub fn writeFixedSubframe(
                 try self.writeBitsWrapped(min_digits, @as(u32, @bitCast(r)));
             }
         } else { // Normal
-            try self.writeRicePart(part_residuals, param);
+            var zigzags: []u32 = @ptrCast(part_residuals);
+            for (0..zigzags.len) |i| zigzags[i] = rice_code.calcZigzag(part_residuals[i]);
+
+            try self.writeRicePart(zigzags, param);
         }
         remain_residuals = remain_residuals[part_size..];
         part_size = residuals.len >> rice_config.part_order;
     }
 }
 
-pub fn writeRicePart(self: *@This(), residuals: []i32, param: u5) error{WriteFailed}!void {
-    for (residuals) |res| {
-        var rice: RiceCode = .make(param, res);
+pub fn writeRicePart(self: *@This(), zigzags: []u32, param: u5) error{WriteFailed}!void {
+    for (zigzags) |zz| {
+        var rice: RiceCode = .makeFromZz(param, zz);
         // Write Quotient
         while (rice.quo > 63) : (rice.quo -= 64) {
             @branchHint(.unlikely);

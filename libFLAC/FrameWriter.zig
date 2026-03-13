@@ -57,7 +57,7 @@ pub fn writeBits(self: *@This(), size: u8, value: u64) error{WriteFailed}!void {
 }
 
 /// Should be used instead of `writeBits()` when writing signed negative integers
-pub inline fn writeBitsWrapped(self: *@This(), size: u7, value: u64) error{WriteFailed}!void {
+pub inline fn writeBitsWrapped(self: *@This(), size: u8, value: u64) error{WriteFailed}!void {
     const bits = value & (@as(u64, std.math.maxInt(u64)) >> @intCast(64 - size));
     return self.writeBits(size, bits);
 }
@@ -255,7 +255,7 @@ pub fn writeVerbatimSubframe(
 
 pub fn writeFixedSubframe(
     self: *@This(),
-    sample_size: u6,
+    sample_size: u8,
     residuals: []i32,
     order: u8,
     rice_config: RiceConfig,
@@ -287,14 +287,15 @@ pub fn writeFixedSubframe(
         if (param == escape_code) { // Escaped
             @branchHint(.cold);
             // Calc minimum bits to store the numbers
-            var max_res: u32 = 0;
+            var or_all: i32 = 0;
             for (part_residuals) |r| {
-                max_res = @max(max_res, @abs(r));
+                or_all |= r;
             }
-            const min_digits = 33 - @clz(max_res);
-            try self.writeBits(5, min_digits);
+            const waste_bits: u8 = @ctz(or_all);
+            const bits_per_sample: u8 = sample_size -| waste_bits;
+            try self.writeBits(5, bits_per_sample);
             for (part_residuals) |r| {
-                try self.writeBitsWrapped(min_digits, @as(u32, @bitCast(r)));
+                try self.writeBitsWrapped(bits_per_sample, @as(u32, @bitCast(r >> @intCast(waste_bits))));
             }
         } else { // Normal
             var zigzags: []u32 = @ptrCast(part_residuals);

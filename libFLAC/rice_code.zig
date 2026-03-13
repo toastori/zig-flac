@@ -207,5 +207,5 @@ pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.met
     const eq_opt_bc: @Vector(mm_len, bool) = min_bit_count == @as(Vec, @splat(optimal_bit_count));
     const optimal_param: u64 = @reduce(.Min, @select(u64, eq_opt_bc, min_param, ones));
 
-    return .{ @intCast(optimal_param), optimal_bit_count };
+    return .{ @intCast(optimal_param), if (optimal_param == max_param + 1) (part_size * optimal_param) else optimal_bit_count };
 }

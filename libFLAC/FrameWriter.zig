@@ -263,10 +263,10 @@ pub fn writeFixedSubframe(
     const param_len: u6 = @intFromEnum(rice_config.method) + 4;
     const part_count = @as(usize, 1) << rice_config.part_order;
 
-    // Bug writing subframe header?
+    // Write subframe header
     try self.writeBits(8, (8 | order) << 1); // N-th order Fixed coding
 
-    // Write Unencoded warm-up samples
+    // Write unencoded warm-up samples
     for (0..order) |i| {
         try self.writeBitsWrapped(sample_size, @as(u32, @bitCast(residuals[i])));
     }
@@ -275,6 +275,7 @@ pub fn writeFixedSubframe(
     try self.writeBits(2 + 4, (@intFromEnum(rice_config.method) << 4) | rice_config.part_order);
 
     // Write Rice codes
+    const escape_code: u5 = if (rice_config.method == .FOUR) 0b1111 else 0b11111;
     var remain_residuals = residuals[order..];
     var part_size = (residuals.len >> rice_config.part_order) - order;
     for (rice_config.params[0..part_count]) |param| { // Partition
@@ -283,23 +284,18 @@ pub fn writeFixedSubframe(
 
         const part_residuals = remain_residuals[0..part_size];
 
-        if (param == rice_code.ESC_PART) { // Escaped
+        if (param == escape_code) { // Escaped
+            @branchHint(.cold);
             // Calc minimum bits to store the numbers
-            // var min_digits: u6 = 0;
-            // for (part_residuals) |r| {
-            //     const digits: u6 = 32 - @as(u6, @intCast(@clz(@abs(r)))) + 1;
-            //     if (digits > min_digits) min_digits = digits;
-            // }
-            // try self.writeBits(5, min_digits);
-            // for (part_residuals) |r| {
-            //     try self.writeBits(min_digits, @as(u32, @bitCast(r)));
-            // }
-
-            // Currently is just 0
-            // try self.writeBits(5, 0);
-            //
-            // std.debug.print("ESCAPE!!!\n", .{});
-            unreachable;
+            var max_res: u32 = 0;
+            for (part_residuals) |r| {
+                max_res = @max(max_res, @abs(r));
+            }
+            const min_digits = 33 - @clz(max_res);
+            try self.writeBits(5, min_digits);
+            for (part_residuals) |r| {
+                try self.writeBitsWrapped(min_digits, @as(u32, @bitCast(r)));
+            }
         } else { // Normal
             try self.writeRicePart(part_residuals, param);
         }

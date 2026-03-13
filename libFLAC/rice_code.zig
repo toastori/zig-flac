@@ -20,6 +20,10 @@ pub const RiceCode = struct {
 
     pub fn make(param: u5, value: i32) @This() {
         const zigzag: u32 = calcZigzag(value);
+        return makeFromZz(param, zigzag);
+    }
+
+    pub fn makeFromZz(param: u5, zigzag: u32) @This() {
         return .{
             .quo = @intCast(zigzag >> param),
             .rem = @intCast(zigzag & ((@as(u32, 1) << param) - 1)),
@@ -88,7 +92,7 @@ fn calcRiceParam(
     return .{ optimal_bit_count, optimal_config };
 }
 
-inline fn calcZigzag(value: i32) u32 {
+pub inline fn calcZigzag(value: i32) u32 {
     // return if (value < 0) @as(u32, @bitCast(value)) *% 2 - 1 else @as(u32, @bitCast(value)) *% 2;
     return @bitCast((value << 1) ^ (value >> 31));
 }
@@ -167,6 +171,11 @@ pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.met
     const mm_len = std.simd.suggestVectorLength(u64) orelse 1;
     const Vec = @Vector(mm_len, u64);
 
+    if (part_sum == 0) { // very rare case that have a partition with all 0 (perfect prediction)
+        @branchHint(.cold);
+        return .{ @intCast(max_param + 1), 5 };
+    }
+
     var min_bit_count: Vec = @splat(std.math.maxInt(u64));
     var min_param: Vec = @splat(std.math.maxInt(u64));
 
@@ -177,20 +186,14 @@ pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.met
 
     const p_size: Vec = @splat(part_size);
     const ones: Vec = @splat(std.math.maxInt(u64));
-    const mask: Vec = comptime blk: {
-        var mask_tmp: Vec = @splat(0);
-        mask_tmp[mm_len - 1] = std.math.maxInt(u64);
-        break :blk mask_tmp;
-    };
     const lhs: Vec = @splat(part_sum -% part_size / 2);
     var temps: [2]Vec = undefined;
 
 
-    for (0..steps) |step| {
+    for (0..steps) |_| {
         temps[0] = p_size * param_p1;
         temps[1] = lhs >> @intCast(param);
-        var bit_counts = temps[0] +% temps[1];
-        if (step == steps - 1) bit_counts = mask | bit_counts;
+        const bit_counts = temps[0] +% temps[1];
 
         const smaller = bit_counts < min_bit_count;
         min_param = @select(u64, smaller, param, min_param);

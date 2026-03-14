@@ -284,14 +284,12 @@ fn chooseSubframeEncoding(
         fixed_prediction.bestOrder(
             SampleT,
             samples,
-            sample_size,
             false,
         ) orelse unreachable
     else
         fixed_prediction.bestOrder(
             SampleT,
             samples,
-            sample_size,
             true,
         ) orelse return .{ subframe_size, subframe_type };
 

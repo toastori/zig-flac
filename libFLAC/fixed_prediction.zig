@@ -37,6 +37,12 @@ pub fn calcResiduals(SampleT: type, samples: []const SampleT, dest: []i32, order
     const mm_len = std.simd.suggestVectorLength(SampleT) orelse 1;
     const Vec = @Vector(mm_len, SampleT);
 
+    if (order == 0) {
+        if (SampleT == i32) @memcpy(dest, samples)
+        else for (dest, samples) |*d, s| d.* = @intCast(s);
+        return;
+    }
+
     const coeff: [4]Vec = .{
         @splat(NEO_COEFF[order][0]),
         @splat(NEO_COEFF[order][1]),
@@ -89,13 +95,12 @@ pub inline fn inRange(num: i64) bool {
 pub fn bestOrder(
     SampleT: type,
     samples: []const SampleT,
-    sample_size: usize,
     comptime check_range: bool,
 ) ?u8 {
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
 
-    var total_error: [5]u64 = .{ 0, sample_size, sample_size * 2, sample_size * 3, sample_size * 4 };
+    var total_error: [5]u64 = @splat(0);
     for (0..5) |order| {
         var i: usize = order;
         while (i < samples.len) : (i += 1) {

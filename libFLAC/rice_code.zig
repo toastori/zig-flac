@@ -183,28 +183,27 @@ pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.met
 
     var param: Vec = std.simd.iota(u64, mm_len);
     var param_p1: Vec = param + @as(Vec, @splat(1));
+    const param_inc: Vec = @splat(mm_len);
 
     const p_size: Vec = @splat(part_size);
     const ones: Vec = @splat(std.math.maxInt(u64));
     const lhs: Vec = @splat(part_sum -% part_size / 2);
-    var temps: [2]Vec = undefined;
-
 
     for (0..steps) |_| {
-        temps[0] = p_size * param_p1;
-        temps[1] = lhs >> @intCast(param);
-        const bit_counts = temps[0] +% temps[1];
+        const left = p_size * param_p1;
+        const right = lhs >> @intCast(param);
+        const bit_counts = left +% right;
 
         const smaller = bit_counts < min_bit_count;
         min_param = @select(u64, smaller, param, min_param);
         min_bit_count = @min(bit_counts, min_bit_count);
 
-        param += @splat(mm_len);
-        param_p1 += @splat(mm_len);
+        param += param_inc;
+        param_p1 += param_inc;
     }
 
     const optimal_bit_count: u64 = @reduce(.Min, min_bit_count);
-    const eq_opt_bc: @Vector(mm_len, bool) = min_bit_count == @as(Vec, @splat(optimal_bit_count));
+    const eq_opt_bc = min_bit_count == @as(Vec, @splat(optimal_bit_count));
     const optimal_param: u64 = @reduce(.Min, @select(u64, eq_opt_bc, min_param, ones));
 
     return .{ @intCast(optimal_param), if (optimal_param == max_param + 1) (part_size * optimal_param) else optimal_bit_count };

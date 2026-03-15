@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const metadata = @import("metadata.zig");
 const rice_code = @import("rice_code.zig");
 
+const Crc16 = @import("Crc16.zig");
 const RiceCode = rice_code.RiceCode;
 const RiceConfig = rice_code.RiceConfig;
 
@@ -17,7 +18,7 @@ buffer: []u64,
 end: usize = 0,
 remain_bits: u8 = W_BIT,
 
-crc16: std.hash.crc.Crc16Umts = .init(),
+crc16: Crc16 = .{},
 
 bytes_written: u24 = 0,
 
@@ -127,7 +128,7 @@ pub fn writeCrc8(self: *@This()) error{WriteFailed}!void {
 pub inline fn writeCrc16(self: *@This()) error{WriteFailed}!void {
     if (self.end != 0 or self.remain_bits != W_BIT) try self.flushAllNoBitEndReset();
     self.bytes_written += 2;
-    try self.writer.writeInt(u16, self.crc16.final(), .big);
+    try self.writer.writeInt(u16, self.crc16.crc, .big);
 }
 
 /// Write frame header

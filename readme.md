@@ -1,12 +1,12 @@
 # FLAC encoder (and maybe decoder)
 A flac encoder written entirely in zig for learning purposes \
 \
-Zig version 0.15.1
+Zig version 0.15.2
 ## Done
 - Encoding
   - Format
     - All sampling rates (by flac standard) (44.1/96 kHz tested)
-    - Full byte sample depth (by flac standard) (16/24 bits tested)
+    - 16 / 24 bits sample depth (by flac standard)
   - Metadata
     - Streaminfo
       - Write min/max frame size
@@ -18,7 +18,6 @@ Zig version 0.15.1
     - Constant
     - Verbatim
     - Fixed Prediction
-      - Escaped partition not tested
 - Decoding
   - PCM WAV file (little endian)
   - PCM WAV extensible file (little endian)
@@ -40,4 +39,3 @@ Zig version 0.15.1
   - Cuesheet
   - Picture
   - Seek Table
-- Dynamic frame size

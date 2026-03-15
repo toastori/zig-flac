@@ -71,12 +71,29 @@ fn byteSwap(mm: Vec) Vec {
 
 fn fold(acc: Vec, data: Vec) Vec {
     const acc64: Vec64 = @bitCast(acc);
-    const t1 = @"llvm.x86.pclmulqdq"(acc64, K, 0x11);
-    const t2 = @"llvm.x86.pclmulqdq"(acc64, K, 0x00);
+    const t1 = clmul(acc64, K, 0x11);
+    const t2 = clmul(acc64, K, 0x00);
     return @as(Vec, @bitCast(t1 ^ t2)) ^ data;
 }
 
+fn clmul(a: Vec64, b: Vec64, comptime imm: u8) Vec64 {
+    const cpu_family = builtin.cpu.arch.family();
+    return switch (cpu_family) {
+        .x86 => @"llvm.x86.pclmulqdq"(a, b, imm),
+        .arm, .aarch64 => blk: {
+            const endian = comptime builtin.cpu.arch.endian();
+            const hi_qw = if (endian == .little) 1 else 0;
+            const lo_qw = if (endian == .little) 0 else 1;
+            const aq = if (imm & 0x10 != 0) a[hi_qw] else a[lo_qw];
+            const bq = if (imm & 0x01 != 0) b[hi_qw] else b[lo_qw];
+            break :blk @bitCast(@"llvm.aarch64.neon.pmull64"(aq, bq));
+        },
+        else => unreachable,
+    };
+}
+
 extern fn @"llvm.x86.pclmulqdq"(a: Vec64, b: Vec64, imm: u8) Vec64;
+extern fn @"llvm.aarch64.neon.pmull64"(a: u64, b: u64) Vec;
 
 // -- Constants --
 

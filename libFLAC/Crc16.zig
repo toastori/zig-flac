@@ -98,7 +98,7 @@ extern fn @"llvm.aarch64.neon.pmull64"(a: u64, b: u64) Vec;
 // -- Constants --
 
 // Simd
-const do_simd = std.simd.suggestVectorLength(u8) != null;
+const do_simd = std.simd.suggestVectorLength(u8) != null and builtin.mode != .Debug;
 const Vec = @Vector(16, u8);
 const Vec64 = @Vector(2, u64);
 

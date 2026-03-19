@@ -9,6 +9,32 @@ pub const ESC_PART = std.math.maxInt(u5);
 const MAX_ORDER = 8; // Subset now
 const MAX_PART = 1 << MAX_ORDER;
 
+// -- Constants --
+
+const mm_len = blk: {
+    const len = std.simd.suggestVectorLength(u64) orelse 1;
+    break :blk if (len > 32) 32 else len;
+};
+const mm_to_32 = 32 / mm_len;
+const Vec = @Vector(mm_len, u64);
+
+const ones: Vec = @splat(std.math.maxInt(u64));
+const params: [mm_to_32]Vec = blk: {
+    var iota: [mm_to_32]Vec = @splat(std.simd.iota(u64, mm_len));
+    for (1..mm_to_32) |i| {
+        iota[i] += @splat(mm_len * i);
+    }
+    break :blk iota;
+};
+
+const params_p1: [mm_to_32]Vec = blk: {
+    var iota: [mm_to_32]Vec = @splat(std.simd.iota(u64, mm_len));
+    for (0..mm_to_32) |i| {
+        iota[i] += @splat(mm_len * i + 1);
+    }
+    break :blk iota;
+};
+
 // -- Structs --
 
 /// Bits are directly writable by FrameWriter
@@ -39,7 +65,7 @@ pub const RiceConfig = struct {
 
 // -- Functions --
 
-pub fn calcRiceParamFixed(
+pub fn calcRiceParams(
     residuals: []i32,
     max_part_order: u4,
     max_param: u5,
@@ -56,13 +82,160 @@ pub fn calcRiceParamFixed(
     const maximum_part_order: u4 = @intCast(@min(max_part_order, @ctz(residuals.len), pred_order_limited));
     const maximum_param: u5 = @intCast(@min(if (bit_depth > 16) MAX_PARAM_5BIT else MAX_PARAM_4BIT, max_param));
 
-    return calcRiceParam(residuals, maximum_part_order, maximum_param, pred_order);
+    return calcRiceParamEstimate(residuals, maximum_part_order, maximum_param, pred_order);
+}
+
+/// return `.{ bit_count, RiceConfig }`
+fn calcRiceParamExact(
+    residuals: []const i32,
+    max_part_order: u4,
+    max_param: u5,
+    pred_order: u8,
+) std.meta.Tuple(&.{ u64, RiceConfig }) {
+    std.debug.assert(max_param == MAX_PARAM_4BIT or max_param == MAX_PARAM_5BIT);
+
+    const steps: usize = if (MAX_PARAM == MAX_PARAM_4BIT)
+        std.math.divCeil(mm_to_32, 2)
+    else
+        mm_to_32;
+
+    var bit_counts: [MAX_PART][mm_to_32]Vec = undefined;
+    var min_bit_count: u64 = 0;
+    var best_rice_config: RiceConfig = .{ .part_order = max_part_order };
+
+    { // Sum residual rice code length into their smallest partition
+        const part_counts = @as(usize, 1) << max_part_order;
+        const part_size = residuals.len >> max_part_order;
+        { // First partition
+            const result = sumFirstPartBitCounts(residuals[pred_order..part_size], steps);
+            bit_counts[0] = result.bit_counts;
+            min_bit_count = result.bit_count;
+            best_rice_config.params[0] = result.param;
+        }
+        // Remaining partitions
+        var residuals_inc: []const i32 = residuals[part_size..];
+        for (1..part_counts) |part_i| {
+            const result = sumFirstPartBitCounts(residuals_inc[0..part_size], steps);
+            bit_counts[part_i] = result.bit_counts;
+            min_bit_count +|= result.bit_count;
+            best_rice_config.params[part_i] = result.param;
+            residuals_inc = residuals_inc[part_size..];
+        }
+        // Decide to extend rice method
+        if (max_param > MAX_PARAM_4BIT) {
+            for (best_rice_config.params[0..part_counts]) |param| {
+                if (param > MAX_PARAM_4BIT) best_rice_config.method = .FIVE;
+            }
+        }
+        min_bit_count += (@as(u64, @intFromEnum(best_rice_config.method)) + 4) * part_counts;
+    }
+
+    // Test other partition orders
+    var part_order = max_part_order -% 1;
+    while (max_part_order != 0) : (part_order -= 1) {
+        const order_result = calcOtherPartBitCount(
+            &bit_counts,
+            part_order,
+            max_param,
+            steps
+        );
+
+        // Update best setting if bit_count is smaller
+        if (order_result.bit_count < min_bit_count) {
+            min_bit_count = order_result.bit_count;
+            best_rice_config = order_result.rice_config;
+        }
+
+        if (part_order == 0) break;
+    }
+
+    return .{ min_bit_count, best_rice_config };
+}
+
+/// Sum up bit_counts of a partition for each param
+fn sumFirstPartBitCounts(
+    residuals: []const i32,
+    steps: usize,
+) struct { bit_counts: [mm_to_32]Vec, bit_count: u64, param: u5} {
+    // Sum bit_counts up
+    var bit_counts: [mm_to_32]Vec = @splat(@splat(0));
+    for (residuals) |res| {
+        const zigzags: Vec = @splat(calcZigzag(res));
+        for (0..steps) |step| {
+            bit_counts[step] +|= (zigzags >> @intCast(params[step])) + params_p1[step];
+        }
+    }
+
+    // Find min bit_counts and param
+    var min_bc = bit_counts[0];
+    var min_param = params[0];
+    for (1..steps) |step| {
+        const smaller = bit_counts[step] < min_bc;
+        min_param = @select(u64, smaller, params[step], min_param);
+        min_bc = @min(bit_counts[step], min_bc);
+    }
+
+    const optimal_bit_count: u64 = @reduce(.Min, min_bc);
+    const eq_opt_bc = min_bc == @as(Vec, @splat(optimal_bit_count));
+    const optimal_param: u64 = @reduce(.Min, @select(u64, eq_opt_bc, min_param, ones));
+
+    return .{
+        .bit_counts = bit_counts,
+        .bit_count = optimal_bit_count,
+        .param = @intCast(optimal_param)
+    };
+}
+
+fn calcOtherPartBitCount(
+    bit_counts: *[MAX_PART][mm_to_32]Vec,
+    part_order: u4,
+    max_param: u5,
+    steps: usize,
+) struct { bit_count: u64, rice_config: RiceConfig } {
+    var rice_config: RiceConfig = .{ .part_order = part_order };
+    var bit_count: u64 = 0;
+
+    const part_counts = @as(usize, 1) << part_order;
+    // Sum 2 parts into 1
+    for (0..part_counts) |p| {
+        for (0..steps) |step| {
+            bit_counts[p][step] = bit_counts[p * 2][step] +| bit_counts[p * 2 + 1][step];
+        }
+    }
+
+    // Find optimal bit_count and param for each partition
+    for (0..part_counts) |p| {
+        var min_bc: Vec = bit_counts[p][0];
+        var min_param: Vec = params[0];
+        for (1..steps) |step| {
+            const smaller = bit_counts[p][step] < min_bc;
+            min_param = @select(u64, smaller, params[step], min_param);
+            min_bc = @min(bit_counts[p][step], min_bc);
+        }
+        const optimal_bit_count: u64 = @reduce(.Min, min_bc);
+        const eq_opt_bc = min_bc == @as(Vec, @splat(optimal_bit_count));
+        const optimal_param: u64 = @reduce(.Min, @select(u64, eq_opt_bc, min_param, ones));
+
+        bit_count +|= optimal_bit_count;
+        rice_config.params[p] = @intCast(optimal_param);
+    }
+
+    // Decide to extend rice method
+    if (max_param > MAX_PARAM_4BIT) {
+        for (rice_config.params[0..part_counts]) |param| {
+            if (param > MAX_PARAM_4BIT) rice_config.method = .FIVE;
+        }
+    }
+    bit_count +|= (@as(u64, @intFromEnum(rice_config.method)) + 4) * part_counts;
+
+    // Update best setting if bit_count is smaller
+    return .{ .bit_count = bit_count, .rice_config = rice_config };
 }
 
 // Copied from flake
 /// return `.{ bit_count, RiceConfig }`
-fn calcRiceParam(
-    residuals: []i32,
+fn calcRiceParamEstimate(
+    residuals: []const i32,
     max_part_order: u4,
     max_param: u5,
     pred_order: u8,
@@ -101,7 +274,7 @@ pub inline fn calcZigzag(value: i32) u32 {
 /// Calculate "sum of zigzag" for each partition of each partition size \
 /// Of course smallest sum of zigzag compressed the best by rice code
 fn calcSums(
-    residuals: []i32,
+    residuals: []const i32,
     max_part_order: u4,
     pred_order: u8,
     sums: *[MAX_ORDER + 1][MAX_PART]u64,
@@ -112,8 +285,9 @@ fn calcSums(
     // Sum for highest level
     var res = residuals;
     const part_size: usize = residuals.len >> max_part_order;
+    const part_count = @as(usize, 1) << max_part_order;
     @prefetch(residuals, .{ .locality = 3 });
-    for (sums[max_part_order][0..(@as(usize, 1) << max_part_order)], 0..) |*sum, part| {
+    for (sums[max_part_order][0..part_count], 0..) |*sum, part| {
         sum.* = 0;
         for (res[part * part_size..][0..part_size]) |r|
             sum.* += calcZigzag(r);
@@ -168,8 +342,6 @@ fn calcOptimalParams(
 
 pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.meta.Tuple(&.{u5, u64}) {
     std.debug.assert(max_param == MAX_PARAM_4BIT or max_param == MAX_PARAM_5BIT);
-    const mm_len = std.simd.suggestVectorLength(u64) orelse 1;
-    const Vec = @Vector(mm_len, u64);
 
     if (part_sum == 0) { // very rare case that have a partition with all 0 (perfect prediction)
         @branchHint(.cold);
@@ -181,25 +353,17 @@ pub fn findOptimalParam(part_sum: u64, part_size: u64, max_param: usize) std.met
 
     const steps = (max_param + mm_len) / mm_len;
 
-    var param: Vec = std.simd.iota(u64, mm_len);
-    var param_p1: Vec = param + @as(Vec, @splat(1));
-    const param_inc: Vec = @splat(mm_len);
-
     const p_size: Vec = @splat(part_size);
-    const ones: Vec = @splat(std.math.maxInt(u64));
     const lhs: Vec = @splat(part_sum -% part_size / 2);
 
-    for (0..steps) |_| {
-        const left = p_size * param_p1;
-        const right = lhs >> @intCast(param);
+    for (0..steps) |step| {
+        const left = p_size * params_p1[step];
+        const right = lhs >> @intCast(params[step]);
         const bit_counts = left +% right;
 
         const smaller = bit_counts < min_bit_count;
-        min_param = @select(u64, smaller, param, min_param);
+        min_param = @select(u64, smaller, params[step], min_param);
         min_bit_count = @min(bit_counts, min_bit_count);
-
-        param += param_inc;
-        param_p1 += param_inc;
     }
 
     const optimal_bit_count: u64 = @reduce(.Min, min_bit_count);

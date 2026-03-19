@@ -296,7 +296,7 @@ fn chooseSubframeEncoding(
     // Prepare residuals
     fixed_prediction.calcResiduals(SampleT, samples, residuals_dest, best_fixed_order);
 
-    const fixed_size, const rice_config = rice_code.calcRiceParamFixed(
+    const fixed_size, const rice_config = rice_code.calcRiceParams(
         residuals_dest,
         config.max_rice_order,
         config.max_rice_param,

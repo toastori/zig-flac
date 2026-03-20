@@ -96,9 +96,12 @@ extern fn @"llvm.x86.pclmulqdq"(a: Vec64, b: Vec64, imm: u8) Vec64;
 extern fn @"llvm.aarch64.neon.pmull64"(a: u64, b: u64) Vec;
 
 // -- Constants --
-
 // Simd
-const do_simd = std.simd.suggestVectorLength(u8) != null and builtin.mode != .Debug;
+const do_simd =
+    (
+        builtin.target.cpu.has(.x86, std.Target.x86.Feature.pclmul) or
+        builtin.target.cpu.has(.aarch64, std.Target.aarch64.Feature.v8a)
+    ) and builtin.mode != .Debug;
 const Vec = @Vector(16, u8);
 const Vec64 = @Vector(2, u64);
 

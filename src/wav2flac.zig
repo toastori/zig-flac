@@ -3,6 +3,7 @@ const option = @import("option");
 
 const flac = @import("flac");
 
+const Md5 = @import("Md5.zig");
 const WavReader = @import("WavReader.zig");
 
 /// Main function for WAV to FLAC
@@ -29,7 +30,7 @@ pub fn main(
     try flac_enc.writeVorbisComment(true);
 
     // Start Encoding flac
-    var md5: std.crypto.hash.Md5 = try switch (streaminfo.bit_depth) {
+    var md5: Md5.Ctx = try switch (streaminfo.bit_depth) {
         4...32 => encode(allocator, streaminfo, wav, flac_enc),
         else => unreachable,
     };
@@ -49,8 +50,8 @@ fn encode(
     streaminfo: *flac.metadata.StreamInfo,
     wav: WavReader,
     flac_enc: flac.Encoder,
-) !std.crypto.hash.Md5 {
-    var md5 = std.crypto.hash.Md5.init(.{});
+) !Md5.Ctx {
+    var md5: Md5.Ctx = Md5.init();
 
     const wav_sample_buf = try allocator.alloc(u8, option.frame_size * wav.channels * wav.bytes_per_sample);
     defer allocator.free(wav_sample_buf);

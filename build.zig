@@ -8,8 +8,10 @@ pub fn build(b: *std.Build) void {
 
     // Define Options
     const option = b.addOptions();
+    const link_ossl = b.option(bool, "link_ossl", "dynamically link openssl as dependency (default: false)") orelse false;
     const d_buffer_size = b.option(usize, "buffer_size", "Set buffer size of reader and writer (default: 4096)") orelse 4096;
     const d_frame_size = b.option(u16, "frame_size", "Set frame size of encoder (default: 4096)") orelse 4096;
+    option.addOption(bool, "link_ossl", link_ossl);
     option.addOption(usize, "buffer_size", d_buffer_size);
     option.addOption(usize, "frame_size", d_frame_size);
 
@@ -33,9 +35,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .strip = strip,
+        .link_libc = link_ossl,
     });
     exe_mod.addImport("option", option_mod);
     exe_mod.addImport("flac", libflac_mod);
+    if (link_ossl) exe_mod.linkSystemLibrary("libcrypto", .{});
 
     // Executable
     const exe = b.addExecutable(.{

@@ -10,7 +10,7 @@ Zig version 0.15.2
   - Metadata
     - Streaminfo
       - Write min/max frame size
-      - Calculate MD5
+      - Calculate MD5 (optionally linking openssl)
     - Vendor Signature
   - Stereo mode selection
   - Subframe

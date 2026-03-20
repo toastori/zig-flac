@@ -3,6 +3,7 @@ const endian = @import("builtin").cpu.arch.endian();
 
 const BLOCK_SIZE = @import("option").frame_size;
 
+const Md5 = @import("Md5.zig");
 const FlacStreaminfo = @import("flac").metadata.StreamInfo;
 
 // -- Members --
@@ -40,7 +41,7 @@ pub inline fn init(reader: *std.Io.Reader) !@This() {
 /// - `dest` for easier to work with, since its length might be modified
 /// - `null` when no samples to read
 /// - `StreamError.IncompleteStream` when bytes of sample does not fill up all bytes of all channels
-pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32, md5: *std.crypto.hash.Md5) !?[][]i32 {
+pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32, md5: *Md5.Ctx) !?[][]i32 {
     std.debug.assert(dest[0].len >= samples);
     std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
     const shift_amt: u5 = @intCast(32 - self.bit_depth);

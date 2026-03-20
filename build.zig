@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("option", option_mod);
     exe_mod.addImport("flac", libflac_mod);
-    if (link_ossl) exe_mod.linkSystemLibrary("libcrypto", .{});
+    if (link_ossl) exe_mod.linkSystemLibrary("crypto", .{});
 
     // Executable
     const exe = b.addExecutable(.{

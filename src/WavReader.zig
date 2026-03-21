@@ -117,14 +117,10 @@ fn getFmt(self: *@This()) !void {
     if (!std.mem.eql(u8, try self.reader.takeArray(4), "WAVE"))
         return EncodingError.NotWaveFile;
     // Format info
-    var first_subchunk: *[4]u8 = try self.reader.takeArray(4);
-    if (std.mem.eql(u8, first_subchunk, "JUNK")) {
+    while (!std.mem.eql(u8, try self.reader.take(4), "fmt ")) {
         const bytes = try self.reader.takeInt(u32, .little);
         try self.reader.discardAll(bytes);
-        first_subchunk = try self.reader.takeArray(4);
     }
-    if (!std.mem.eql(u8, first_subchunk, "fmt "))
-        return EncodingError.InvalidSubchunkHeader;
     try self.reader.discardAll(4); // fmt size
     const codec: enum(u16) { PCM = 1, PCM_EXTEND = 0xfffe } = switch (try self.reader.takeInt(u16, .little)) {
         1, 0xfffe => |c| @enumFromInt(c),

@@ -66,16 +66,17 @@ fn encode(
     const samples = arr_samples[0..wav.channels];
 
     var frame_idx: u36 = 0;
-    while (true) : (frame_idx += 1) {
-        const samples_read = (try wav.fillSamplesMd5(wav_sample_buf, option.frame_size, samples, &md5)) orelse break;
+    var remain_samples_count: usize = wav.samples_count;
+    while (remain_samples_count > 0) : (frame_idx += 1) {
+        const read_samples = @min(option.frame_size, remain_samples_count);
+        const samples_read = (try wav.fillSamplesMd5(wav_sample_buf, read_samples, samples, &md5)) orelse break;
+        remain_samples_count -= samples_read[0].len;
 
         const bytes_written =
             try flac_enc.writeFrame(samples_read, frame_idx, streaminfo.*);
 
         // Update min/max framesize in streaminfo
         streaminfo.updateFrameSize(bytes_written);
-
-        if (samples_read[0].len < option.frame_size) break;
     }
 
     return md5;

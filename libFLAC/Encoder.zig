@@ -280,21 +280,25 @@ fn chooseSubframeEncoding(
 
     // -- Fixed Prediction --
 
-    const best_fixed_order = if (sample_size < 28)
+    const best_fixed_order = if (sample_size < 28 and SampleT == i32)
         fixed_prediction.bestOrder(
             SampleT,
+            .normal,
             samples,
-            false,
         ) orelse unreachable
     else
         fixed_prediction.bestOrder(
             SampleT,
+            .wide,
             samples,
-            true,
         ) orelse return .{ subframe_size, subframe_type };
 
     // Prepare residuals
-    fixed_prediction.calcResiduals(SampleT, samples, residuals_dest, best_fixed_order);
+    if (sample_size < 28 and SampleT == i32) {
+        fixed_prediction.calcResiduals(SampleT, .normal, samples, residuals_dest, best_fixed_order);
+    } else {
+        fixed_prediction.calcResiduals(SampleT, .wide, samples, residuals_dest, best_fixed_order);
+    }
 
     const fixed_size, const rice_config = rice_code.calcRiceParams(
         residuals_dest,

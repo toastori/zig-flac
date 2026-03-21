@@ -18,7 +18,7 @@ pub fn midSideChannels(
 ) void {
     std.debug.assert(left.len == right.len and right.len == mid_dest.len and mid_dest.len == side_dest.len);
     for (left, right, mid_dest, side_dest) |l, r, *m, *s| {
-        m.* = midSample(l, r);
+        m.* = midSample(SampleT, l, r);
         s.* = sideSample(SampleT, l, r);
     }
 }
@@ -45,11 +45,11 @@ pub fn sideChannel(SampleT: type, left: []const i32, right: []const i32, dest: [
 }
 
 /// Calculate a mid sample
-inline fn midSample(left: i32, right: i32) i32 {
-    return (left + right) >> 1;
+inline fn midSample(SampleT: type, left: SampleT, right: SampleT) i32 {
+    return @intCast((left + right) >> 1);
 }
 
 /// Calculate a side sample
-inline fn sideSample(SampleT: type, left: i32, right: i32) SampleT {
+inline fn sideSample(SampleT: type, left: SampleT, right: SampleT) SampleT {
     return left - right;
 }

@@ -6,7 +6,7 @@ Zig version 0.15.2
 - Encoding
   - Format
     - All sampling rates (by flac standard) (44.1/96 kHz tested)
-    - 16 / 24 bits sample depth (by flac standard)
+    - 16 / 24 / 32 bits sample depth (by flac standard)
   - Metadata
     - Streaminfo
       - Write min/max frame size

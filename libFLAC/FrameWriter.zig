@@ -65,7 +65,10 @@ pub fn writeBits(self: *@This(), size: u8, value: u64) error{WriteFailed}!void {
 
 /// Should be used instead of `writeBits()` when writing signed negative integers
 pub inline fn writeBitsWrapped(self: *@This(), size: u8, value: u64) error{WriteFailed}!void {
-    const bits = value & (@as(u64, std.math.maxInt(u64)) >> @intCast(64 - size));
+    const bits = value & (
+        @as(u64, std.math.maxInt(u64)) >>
+        (if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) @truncate(64 - size) else @intCast(64 - size))
+    );
     return self.writeBits(size, bits);
 }
 
@@ -307,7 +310,7 @@ pub fn writeFixedSubframe(
             for (part_residuals) |r| {
                 or_all |= r;
             }
-            const waste_bits: u8 = @ctz(or_all);
+            const waste_bits: u8 = if (@ctz(or_all) > sample_size) sample_size else @ctz(or_all);
             const bits_per_sample: u8 = sample_size -| waste_bits;
             try self.writeBits(5, bits_per_sample);
             for (part_residuals) |r| {

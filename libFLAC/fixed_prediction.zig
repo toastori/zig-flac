@@ -1,9 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const sample_iter = @import("samples.zig");
-
-const SampleIter = sample_iter.SampleIter;
-const MultiOrderFixedResidualIter = sample_iter.MultiOrderFixedResidualIter;
 
 const mm_len_32 = std.simd.suggestVectorLength(i32) orelse 1;
 const mm_len_64 = std.simd.suggestVectorLength(i64) orelse 1;

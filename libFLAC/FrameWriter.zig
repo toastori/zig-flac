@@ -263,67 +263,91 @@ pub fn writeVerbatimSubframe(
     sample_size: u6,
     samples: []const SampleT,
 ) error{WriteFailed}!void {
+    if (SampleT != i32 and SampleT != i64) @compileError("FrameWriter.writeVerbatimSubframe: expect SampleT as i32 or i64");
     // Subframe Header: SyncBit[0](1) + Verbatim Coding[000001](6) + WastedBits[0](1)
     try self.writeBits(8, 1 << 1);
 
     for (samples) |sample| {
-        const sample_u: std.meta.Int(.unsigned, @bitSizeOf(SampleT)) = @bitCast(sample);
+        const sample_u: if (SampleT == i32) u32 else u64 = @bitCast(sample);
         try self.writeBitsWrapped(sample_size, sample_u);
     }
 }
 
 pub fn writeFixedSubframe(
     self: *@This(),
+    SampleT: type,
     sample_size: u8,
+    samples: []const SampleT,
     residuals: []i32,
     order: u8,
     rice_config: RiceConfig,
 ) error{WriteFailed}!void {
+    if (SampleT != i32 and SampleT != i64) @compileError("FrameWriter.writeFixedSubframe: expect SampleT as i32 or i64");
     const param_len: u6 = @intFromEnum(rice_config.method) + 4;
     const part_count = @as(usize, 1) << rice_config.part_order;
+    const escape_code: u5 = if (rice_config.method == .FOUR) 0b1111 else 0b11111;
 
-    // Write subframe header
-    try self.writeBits(8, (8 | order) << 1); // N-th order Fixed coding
-
+    // Subframe Header: SyncBit[0](1) + Fixed Coding[001NNN](6) + WastedBits[0](1)
+    try self.writeBits(8, (8 | order) << 1);
     // Write unencoded warm-up samples
     for (0..order) |i| {
-        try self.writeBitsWrapped(sample_size, @as(u32, @bitCast(residuals[i])));
+        try self.writeBitsWrapped(
+            sample_size,
+            @as(if (SampleT == i32) u32 else u64, @bitCast(samples[i]))
+        );
     }
 
     // Rice code with N bits param(2) + Partition order(4)
     try self.writeBits(2 + 4, (@intFromEnum(rice_config.method) << 4) | rice_config.part_order);
 
     // Write Rice codes
-    const escape_code: u5 = if (rice_config.method == .FOUR) 0b1111 else 0b11111;
     var remain_residuals = residuals[order..];
     var part_size = (residuals.len >> rice_config.part_order) - order;
     for (rice_config.params[0..part_count]) |param| { // Partition
+        defer { // Update part_size and residual start after every iteration
+            remain_residuals = remain_residuals[part_size..];
+            part_size = residuals.len >> rice_config.part_order;
+        }
+
+        var part_param = param;
         const part_residuals = remain_residuals[0..part_size];
 
-        // Write rice param
-        try self.writeBits(param_len, param);
-
-        if (param == escape_code) { // Escaped
+        if (param == escape_code) if_blk: { // Escaped TODO 32bits bug
             @branchHint(.cold);
             // Calc minimum bits to store the numbers
+            var res_max: i32 = 0;
             var or_all: i32 = 0;
             for (part_residuals) |r| {
+                res_max |= r ^ (r >> 31);
                 or_all |= r;
             }
-            const waste_bits: u8 = if (@ctz(or_all) > sample_size) sample_size else @ctz(or_all);
-            const bits_per_sample: u8 = sample_size -| waste_bits;
-            try self.writeBits(5, bits_per_sample);
-            for (part_residuals) |r| {
-                try self.writeBitsWrapped(bits_per_sample, @as(u32, @bitCast(r >> @intCast(waste_bits))));
+            const bits_per_sample =
+                if (or_all == 0) 0 else if (res_max == 0) 1 else (@clz(res_max) ^ 31) + 2;
+            // Flac cannot hold 32bits escaped samples, so need to fall back to param=30
+            if (bits_per_sample >= 32) {
+                part_param = 30;
+                break :if_blk;
             }
-        } else { // Normal
-            var zigzags: []u32 = @ptrCast(part_residuals);
-            for (0..zigzags.len) |i| zigzags[i] = rice_code.calcZigzag(part_residuals[i]);
-
-            try self.writeRicePart(zigzags, param);
+            // Write rice param
+            try self.writeBits(param_len, part_param);
+            // Write bits per sample (of escape partition)
+            try self.writeBits(5, @intCast(bits_per_sample));
+            // Write nothing if bits per sample is 0
+            if (bits_per_sample == 0) continue;
+            // Write escaped samples
+            for (part_residuals) |r| {
+                try self.writeBitsWrapped(@intCast(bits_per_sample), @as(u32, @bitCast(r)));
+            }
+            continue;
         }
-        remain_residuals = remain_residuals[part_size..];
-        part_size = residuals.len >> rice_config.part_order;
+        // Normal
+        // Calculate zigzags for the partition
+        var zigzags: []u32 = @ptrCast(part_residuals);
+        for (0..zigzags.len) |i| zigzags[i] = rice_code.calcZigzag(part_residuals[i]);
+        // Write rice param
+        try self.writeBits(param_len, part_param);
+        // Write rice coded residuals
+        try self.writeRicePart(zigzags, part_param);
     }
 }
 
@@ -353,3 +377,4 @@ pub const Channels = enum(u8) {
         };
     }
 };
+

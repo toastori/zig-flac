@@ -48,8 +48,6 @@ pub fn calcResiduals(SampleT: type, comptime wide: Wide, samples: []const Sample
         @splat(NEO_COEFF[order][3]),
     };
 
-    for (0..order) |o| dest[o] = @intCast(samples[o]);
-
     var i = order;
     while (i + mm_len < samples.len) : (i += mm_len) {
         const result =
@@ -87,54 +85,30 @@ pub fn bestOrder(
     comptime wide: Wide,
     samples: []const SampleT,
 ) ?u8 {
-    const Vec = if (wide == .wide) VecWide else VecNormal;
-    const mm_len = @typeInfo(Vec).vector.len;
+    const CalcR = if (wide == .wide) i64 else i32;
+    std.debug.assert(samples.len > MAX_ORDER);
 
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
     var total_error: [5]u64 = @splat(0);
 
-    for (0..5) |order| {
-        var sum: @Vector(mm_len_64, u64) = @splat(0);
-        var ovf: @Vector(mm_len_64, bool) = @splat(false);
-
-        const coeff: [4]Vec = .{
-            @splat(NEO_COEFF[order][0]),
-            @splat(NEO_COEFF[order][1]),
-            @splat(NEO_COEFF[order][2]),
-            @splat(NEO_COEFF[order][3]),
-        };
-
-        var i = order;
-        while (i + mm_len < samples.len) : (i += mm_len) {
-            const result =
-                calcResidualVec(SampleT, Vec, samples, i, order, coeff);
-            if (wide == .wide) ovf |= inRangeVec(result);
-
-            if (wide == .normal) {
-                const chunked_result: [2]@Vector(mm_len_64, u32) = @bitCast(@abs(result));
-                sum += chunked_result[0];
-                sum += chunked_result[1];
-            } else {
-                sum += @abs(result);
-            }
+    { // order 0
+        var in_range: bool = true;
+        for (samples) |s| {
+            total_error[0] += @abs(s);
+            if (wide == .wide) in_range &= inRange(s);
         }
+        if (wide == .wide and !in_range) total_error[0] = std.math.maxInt(u64);
+    }
 
-        var ovf_scalar: bool = @reduce(.Or, ovf);
-        if (ovf_scalar) {
-            total_error[order] = std.math.maxInt(u64);
-            continue;
+    for (1..5) |order| {
+        var in_range: bool = true;
+        for (order..samples.len) |i| {
+            const pred = calcResidual(SampleT, CalcR, samples, i, order);
+            total_error[order] += @abs(pred);
+            if (wide == .wide) in_range &= inRange(pred);
         }
-        var sum_scalar: u64 = @reduce(.Add, sum);
-
-        while (i < samples.len) : (i += 1) {
-            const pred= calcResidual(SampleT, if (wide == .wide) i64 else i32, samples, i, order);
-            if (wide == .wide) ovf_scalar |= inRange(pred);
-            sum_scalar += @abs(pred);
-        }
-        if (ovf_scalar) sum_scalar = std.math.maxInt(u64);
-
-        total_error[order] = sum_scalar;
+        if (wide == .wide and !in_range) total_error[order] = std.math.maxInt(u64);
     }
 
     const best_order: u8 = @intCast(std.mem.indexOfMin(u64, &total_error));
@@ -149,9 +123,9 @@ pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize
     std.debug.assert(n >= order);
     var prediction: R = 0;
     for (0..order, n - order..) |o, i| {
-        prediction += samples[i] * NEO_COEFF[order][o];
+        prediction += @as(R, samples[i]) * @as(R, NEO_COEFF[order][o]);
     }
-    return @intCast(samples[n] - prediction);
+    return @intCast(@as(R, samples[n]) - prediction);
 }
 
 inline fn calcResidualVec(

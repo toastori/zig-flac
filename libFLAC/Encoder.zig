@@ -174,7 +174,7 @@ fn writeChannelSubframe(
         .Constant => try fwriter.writeConstantSubframe(sample_size, samples[0]),
         .Verbatim => try fwriter.writeVerbatimSubframe(SampleT, sample_size, samples),
         .Fixed => |f| {
-            try fwriter.writeFixedSubframe(sample_size, f.residuals, f.order, f.rice_config);
+            try fwriter.writeFixedSubframe(SampleT, sample_size, samples, f.residuals, f.order, f.rice_config);
         },
         // else => unreachable, // TODO
     }

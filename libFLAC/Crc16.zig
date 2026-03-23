@@ -49,7 +49,7 @@ pub fn update(self: *Crc, data: []u8) void {
     final_buf[0..16].* = acc_swapped;
 
     const remaining = data.len - i;
-    if (remaining != 0) @memcpy(final_buf[16..], data[i..]);
+    if (remaining != 0) @memcpy(final_buf[16..][0..remaining], data[i..][0..remaining]);
 
     var table_crc: std.hash.crc.Crc16Umts = .{ .crc = 0 };
     table_crc.update(final_buf[0..16 + remaining]);
@@ -136,4 +136,3 @@ fn calcMu() comptime_int {
     }
     return mu;
 }
-

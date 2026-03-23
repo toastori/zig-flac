@@ -297,6 +297,7 @@ fn calcSums(
     }
     // Sum for lower levels
     // Continuously summing next 2 of previous partition size
+    if (max_part_order == 0) return;
     var i = max_part_order -% 1;
     while (true) : (i -= 1) {
         for (0..@as(usize, 1) << i) |j| {

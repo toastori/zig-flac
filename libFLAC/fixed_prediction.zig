@@ -10,12 +10,20 @@ const VecWide = @Vector(mm_len_64, i64);
 
 pub const MAX_ORDER = 4;
 
-pub const NEO_COEFF: [5][4]i32 = .{
+const COEFF_SCALAR: [5][4]i32 = .{
     .{ 0, 0, 0, 0 }, // 0th order
     .{ 1, 0, 0, 0 }, // 1st order
     .{ -1, 2, 0, 0 }, // 2nd order
     .{ 1, -3, 3, 0 }, // 3rd order
     .{ -1, 4, -6, 4 }, // 4th order
+};
+
+const COEFF_VECTOR: [4]@Vector(4, i64) = .{
+    .{ 1, 2, 3, 4 }, // n - 1 coeffss
+    .{ 0, -1, -3, -6 }, // n - 2 coeff
+    .{ 0, 0, 1, 4 }, // n - 3 coeff
+    .{ 0, 0, 0, -1 }, // n - 4 coeff
+    // 1  2  3  4  order
 };
 
 // -- Functions --
@@ -38,10 +46,10 @@ pub fn calcResiduals(SampleT: type, comptime wide: Wide, samples: []const Sample
     }
 
     const coeff: [4]Vec = .{
-        @splat(NEO_COEFF[order][0]),
-        @splat(NEO_COEFF[order][1]),
-        @splat(NEO_COEFF[order][2]),
-        @splat(NEO_COEFF[order][3]),
+        @splat(COEFF_SCALAR[order][0]),
+        @splat(COEFF_SCALAR[order][1]),
+        @splat(COEFF_SCALAR[order][2]),
+        @splat(COEFF_SCALAR[order][3]),
     };
 
     var i = order;
@@ -64,14 +72,13 @@ pub fn calcResiduals(SampleT: type, comptime wide: Wide, samples: []const Sample
 }
 
 /// Check if the residual is in range
-inline fn inRange(num: i64) bool {
-    return (num <= std.math.maxInt(i32)) and (num > std.math.minInt(i32));
+inline fn inRange(num: u64) bool {
+    return num <= std.math.maxInt(i32);
 }
 
-inline fn inRangeVec(nums: VecWide) @Vector(mm_len_64, bool) {
-    const max: VecWide = @splat(std.math.maxInt(i32));
-    const min: VecWide = @splat(std.math.minInt(i32));
-    return (nums <= max) & (nums > min);
+inline fn inRangeVec(nums: @Vector(4, u64)) @Vector(4, u64) {
+    const limit: @Vector(4, u64) = @splat(std.math.maxInt(i32));
+    return nums <= limit;
 }
 
 /// Find the best fixed prediction order by looking for smallest residuals sum \
@@ -81,30 +88,53 @@ pub fn bestOrder(
     comptime wide: Wide,
     samples: []const SampleT,
 ) ?u8 {
+    if (SampleT == i64 and wide != .wide) @compileError("fixed_prediction.bestOrder: unexpected SampleT == i64 with wide != .wide");
     const CalcR = if (wide == .wide) i64 else i32;
     std.debug.assert(samples.len > MAX_ORDER);
 
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
     var total_error: [5]u64 = @splat(0);
+    var order_valid: [5]bool = @splat(true);
 
-    { // order 0
-        var in_range: bool = true;
-        for (samples) |s| {
-            total_error[0] += @abs(s);
-            if (wide == .wide) in_range &= inRange(s);
-        }
-        if (wide == .wide and !in_range) total_error[0] = std.math.maxInt(u64);
+    for (0..4) |i| {
+        const err0 = @abs(samples[i]);
+        const err1 = if (i < 1) 0 else @abs(calcResidual(SampleT, CalcR, samples, i, 1));
+        const err2 = if (i < 2) 0 else @abs(calcResidual(SampleT, CalcR, samples, i, 2));
+        const err3 = if (i < 3) 0 else @abs(calcResidual(SampleT, CalcR, samples, i, 3));
+        total_error[0] += err0;
+        total_error[1] += err1;
+        total_error[2] += err2;
+        total_error[3] += err3;
+
+        if (wide == .wide) order_valid[0] &= inRange(err0);
+        if (wide == .wide) order_valid[1] &= inRange(err1);
+        if (wide == .wide) order_valid[2] &= inRange(err2);
+        if (wide == .wide) order_valid[3] &= inRange(err3);
     }
 
-    for (1..5) |order| {
-        var in_range: bool = true;
-        for (order..samples.len) |i| {
-            const pred = calcResidual(SampleT, CalcR, samples, i, order);
-            total_error[order] += @abs(pred);
-            if (wide == .wide) in_range &= inRange(pred);
-        }
-        if (wide == .wide and !in_range) total_error[order] = std.math.maxInt(u64);
+    for (4..samples.len) |i| {
+        const err0 = @abs(samples[i]);
+        const err1 = @abs(calcResidual(SampleT, CalcR, samples, i, 1));
+        const err2 = @abs(calcResidual(SampleT, CalcR, samples, i, 2));
+        const err3 = @abs(calcResidual(SampleT, CalcR, samples, i, 3));
+        const err4 = @abs(calcResidual(SampleT, CalcR, samples, i, 4));
+
+        total_error[0] += err0;
+        total_error[1] += err1;
+        total_error[2] += err2;
+        total_error[3] += err3;
+        total_error[4] += err4;
+
+        if (wide == .wide) order_valid[0] &= inRange(err0);
+        if (wide == .wide) order_valid[1] &= inRange(err1);
+        if (wide == .wide) order_valid[2] &= inRange(err2);
+        if (wide == .wide) order_valid[3] &= inRange(err3);
+        if (wide == .wide) order_valid[4] &= inRange(err4);
+    }
+
+    inline for (&total_error, order_valid) |*err, valid| {
+        if (wide == .wide and !valid) err.* = std.math.maxInt(u64);
     }
 
     const best_order: u8 = @intCast(std.mem.indexOfMin(u64, &total_error));
@@ -119,7 +149,7 @@ pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize
     std.debug.assert(n >= order);
     var prediction: R = 0;
     for (0..order, n - order..) |o, i| {
-        prediction += @as(R, samples[i]) * @as(R, NEO_COEFF[order][o]);
+        prediction += @as(R, samples[i]) * @as(R, COEFF_SCALAR[order][o]);
     }
     return @intCast(@as(R, samples[n]) - prediction);
 }

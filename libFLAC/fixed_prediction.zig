@@ -89,52 +89,75 @@ pub fn bestOrder(
     samples: []const SampleT,
 ) ?u8 {
     if (SampleT == i64 and wide != .wide) @compileError("fixed_prediction.bestOrder: unexpected SampleT == i64 with wide != .wide");
-    const CalcR = if (wide == .wide) i64 else i32;
     std.debug.assert(samples.len > MAX_ORDER);
 
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
     var total_error: [5]u64 = @splat(0);
-    var order_valid: [5]bool = @splat(true);
+    var abs_or_all:  [5]u64 = @splat(0);
+
+    var prev_error: [4] i64 = @splat (0);
 
     for (0..4) |i| {
-        const err0 = @abs(samples[i]);
-        const err1 = if (i < 1) 0 else @abs(calcResidual(SampleT, CalcR, samples, i, 1));
-        const err2 = if (i < 2) 0 else @abs(calcResidual(SampleT, CalcR, samples, i, 2));
-        const err3 = if (i < 3) 0 else @abs(calcResidual(SampleT, CalcR, samples, i, 3));
-        total_error[0] += err0;
-        total_error[1] += err1;
-        total_error[2] += err2;
-        total_error[3] += err3;
+        const err0: i64 = samples[i];
+        const err1: i64 = if (i < 1) 0 else err0 - prev_error[0];
+        const err2: i64 = if (i < 2) 0 else err1 - prev_error[1];
+        const err3: i64 = if (i < 3) 0 else err2 - prev_error[2];
 
-        if (wide == .wide) order_valid[0] &= inRange(err0);
-        if (wide == .wide) order_valid[1] &= inRange(err1);
-        if (wide == .wide) order_valid[2] &= inRange(err2);
-        if (wide == .wide) order_valid[3] &= inRange(err3);
+        const abs0: u64 = @abs(err0);
+        const abs1: u64 = @abs(err1);
+        const abs2: u64 = @abs(err2);
+        const abs3: u64 = @abs(err3);
+
+        prev_error[0] = err0;
+        prev_error[1] = err1;
+        prev_error[2] = err2;
+        prev_error[3] = err3;
+
+        total_error[0] += @abs(abs0);
+        total_error[1] += @abs(abs1);
+        total_error[2] += @abs(abs2);
+        total_error[3] += @abs(abs3);
+
+        if (wide == .wide) abs_or_all[0] |= abs0;
+        if (wide == .wide) abs_or_all[1] |= abs1;
+        if (wide == .wide) abs_or_all[2] |= abs2;
+        if (wide == .wide) abs_or_all[3] |= abs3;
     }
 
     for (4..samples.len) |i| {
-        const err0 = @abs(samples[i]);
-        const err1 = @abs(calcResidual(SampleT, CalcR, samples, i, 1));
-        const err2 = @abs(calcResidual(SampleT, CalcR, samples, i, 2));
-        const err3 = @abs(calcResidual(SampleT, CalcR, samples, i, 3));
-        const err4 = @abs(calcResidual(SampleT, CalcR, samples, i, 4));
+        const err0: i64 = samples[i];
+        const err1: i64 = err0 - prev_error[0];
+        const err2: i64 = err1 - prev_error[1];
+        const err3: i64 = err2 - prev_error[2];
+        const err4: i64 = err3 - prev_error[3];
 
-        total_error[0] += err0;
-        total_error[1] += err1;
-        total_error[2] += err2;
-        total_error[3] += err3;
-        total_error[4] += err4;
+        const abs0: u64 = @abs(err0);
+        const abs1: u64 = @abs(err1);
+        const abs2: u64 = @abs(err2);
+        const abs3: u64 = @abs(err3);
+        const abs4: u64 = @abs(err4);
 
-        if (wide == .wide) order_valid[0] &= inRange(err0);
-        if (wide == .wide) order_valid[1] &= inRange(err1);
-        if (wide == .wide) order_valid[2] &= inRange(err2);
-        if (wide == .wide) order_valid[3] &= inRange(err3);
-        if (wide == .wide) order_valid[4] &= inRange(err4);
+        prev_error[0] = err0;
+        prev_error[1] = err1;
+        prev_error[2] = err2;
+        prev_error[3] = err3;
+
+        total_error[0] += @abs(abs0);
+        total_error[1] += @abs(abs1);
+        total_error[2] += @abs(abs2);
+        total_error[3] += @abs(abs3);
+        total_error[4] += @abs(abs4);
+
+        if (wide == .wide) abs_or_all[0] |= abs0;
+        if (wide == .wide) abs_or_all[1] |= abs1;
+        if (wide == .wide) abs_or_all[2] |= abs2;
+        if (wide == .wide) abs_or_all[3] |= abs3;
+        if (wide == .wide) abs_or_all[4] |= abs4;
     }
 
-    inline for (&total_error, order_valid) |*err, valid| {
-        if (wide == .wide and !valid) err.* = std.math.maxInt(u64);
+    inline for (&total_error, abs_or_all) |*err, orall| {
+        if (wide == .wide and !inRange(orall)) err.* = std.math.maxInt(u64);
     }
 
     const best_order: u8 = @intCast(std.mem.indexOfMin(u64, &total_error));

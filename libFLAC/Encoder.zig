@@ -4,8 +4,8 @@ const simd = @import("simd.zig");
 
 const metadata = @import("metadata.zig");
 const samples_fn = @import("samples.zig");
-const rice_code = @import("rice_code.zig");
-const fixed_prediction = @import("fixed_prediction.zig");
+const rice = @import("rice.zig");
+const fixed = @import("fixed.zig");
 
 const FrameWriter = @import("FrameWriter.zig");
 
@@ -332,18 +332,18 @@ fn chooseSubframeEncoding(
     var subframe_size: u64 = @as(usize, samples.len) * @bitSizeOf(SampleT); // Default fallback to Verbatim
 
     // -- Verbatim -- (Least priority)
-    if (samples.len <= fixed_prediction.MAX_ORDER) return .{ subframe_size, subframe_type };
+    if (samples.len <= fixed.MAX_ORDER) return .{ subframe_size, subframe_type };
 
     // -- Fixed Prediction --
 
     const best_fixed_order = if (sample_size < 28 and SampleT == i32)
-        fixed_prediction.bestOrder(
+        fixed.bestOrder(
             SampleT,
             .normal,
             samples,
         ) orelse unreachable
     else
-        fixed_prediction.bestOrder(
+        fixed.bestOrder(
             SampleT,
             .wide,
             samples,
@@ -351,12 +351,12 @@ fn chooseSubframeEncoding(
 
     // Prepare residuals
     if (sample_size < 28 and SampleT == i32) {
-        fixed_prediction.calcResiduals(SampleT, .normal, samples, residuals_dest, best_fixed_order);
+        fixed.calcResiduals(SampleT, .normal, samples, residuals_dest, best_fixed_order);
     } else {
-        fixed_prediction.calcResiduals(SampleT, .wide, samples, residuals_dest, best_fixed_order);
+        fixed.calcResiduals(SampleT, .wide, samples, residuals_dest, best_fixed_order);
     }
 
-    const fixed_size, const rice_config = rice_code.calcRiceParams(
+    const fixed_size, const rice_config = rice.calcParams(
         residuals_dest,
         config.max_rice_order,
         config.max_rice_param,
@@ -475,7 +475,7 @@ pub const Config = struct {
             .prediction = .fixed,
             .channels = if (channels == 2) .stereo_auto else .fromNum(channels),
             .max_rice_order = 8,
-            .max_rice_param = rice_code.MAX_PARAM,
+            .max_rice_param = rice.MAX_PARAM,
         };
     }
 };
@@ -493,7 +493,7 @@ const SubframeType = union(enum) {
     Fixed: struct {
         order: u8,
         residuals: []i32, // need free
-        rice_config: rice_code.RiceConfig,
+        rice_config: rice.Config,
     },
     // Linear: struct {
     //     order: u8,

@@ -1,11 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const metadata = @import("metadata.zig");
-const rice_code = @import("rice_code.zig");
+const rice = @import("rice.zig");
 
 const Crc16 = @import("Crc16.zig");
-const RiceCode = rice_code.RiceCode;
-const RiceConfig = rice_code.RiceConfig;
 
 const W_BIT: u8 = 64;
 const W_BYTE: u8 = 8;
@@ -280,7 +278,7 @@ pub fn writeFixedSubframe(
     samples: []const SampleT,
     residuals: []i32,
     order: u8,
-    rice_config: RiceConfig,
+    rice_config: rice.Config,
 ) error{WriteFailed}!void {
     if (SampleT != i32 and SampleT != i64) @compileError("FrameWriter.writeFixedSubframe: expect SampleT as i32 or i64");
     const param_len: u6 = @intFromEnum(rice_config.method) + 4;
@@ -343,7 +341,7 @@ pub fn writeFixedSubframe(
         // Normal
         // Calculate zigzags for the partition
         var zigzags: []u32 = @ptrCast(part_residuals);
-        for (0..zigzags.len) |i| zigzags[i] = rice_code.calcZigzag(part_residuals[i]);
+        for (0..zigzags.len) |i| zigzags[i] = rice.calcZigzag(part_residuals[i]);
         // Write rice param
         try self.writeBits(param_len, part_param);
         // Write rice coded residuals
@@ -354,11 +352,11 @@ pub fn writeFixedSubframe(
 pub fn writeRicePart(self: *@This(), zigzags: []u32, param: u5) error{WriteFailed}!void {
     const mask = @as(u64, 1) << param;
     for (zigzags) |zz| {
-        const rice: RiceCode = .makeFromZz(param, zz);
+        const rice_code: rice.Code = .makeFromZz(param, zz);
         // Write Quotient
-        try self.writeZeros(rice.quo);
+        try self.writeZeros(rice_code.quo);
         // Write Remainder
-        try self.writeBits(@as(u8, param) + 1, mask | rice.rem);
+        try self.writeBits(@as(u8, param) + 1, mask | rice_code.rem);
     }
 }
 

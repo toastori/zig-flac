@@ -1,6 +1,8 @@
 const std = @import("std");
-const sample_iter = @import("samples.zig");
-const FixedResidualIter = sample_iter.FixedResidualIter;
+
+const rice = @This();
+
+// -- CONSTANTS --
 
 const MAX_PARAM_4BIT: u5 = std.math.maxInt(u4) - 1;
 const MAX_PARAM_5BIT: u5 = std.math.maxInt(u5) - 1;
@@ -8,8 +10,6 @@ pub const MAX_PARAM = MAX_PARAM_5BIT;
 pub const ESC_PART = std.math.maxInt(u5);
 const MAX_ORDER = 8; // Subset now
 const MAX_PART = 1 << MAX_ORDER;
-
-// -- Constants --
 
 const mm_len = blk: {
     const len = std.simd.suggestVectorLength(u64) orelse 1;
@@ -38,7 +38,7 @@ const params_p1: [mm_to_32]Vec = blk: {
 // -- Structs --
 
 /// Bits are directly writable by FrameWriter
-pub const RiceCode = struct {
+pub const Code = struct {
     /// Quotient of result
     quo: u32,
     /// 1 ++ remainder of result
@@ -57,7 +57,7 @@ pub const RiceCode = struct {
     }
 };
 
-pub const RiceConfig = struct {
+pub const Config = struct {
     method: enum(u6) { FOUR = 0, FIVE = 1 } = .FOUR,
     part_order: u4 = undefined,
     params: [MAX_PART]u5 = undefined,
@@ -65,13 +65,13 @@ pub const RiceConfig = struct {
 
 // -- Functions --
 
-pub fn calcRiceParams(
+pub fn calcParams(
     residuals: []i32,
     max_part_order: u4,
     max_param: u5,
     bit_depth: u8,
     pred_order: u8,
-) std.meta.Tuple(&.{ u64, RiceConfig }) {
+) std.meta.Tuple(&.{ u64, rice.Config }) {
     std.debug.assert(residuals.len > pred_order);
     const pred_order_limited: u4 = if (pred_order != 0)
         // log2(a / b)
@@ -82,16 +82,16 @@ pub fn calcRiceParams(
     const maximum_part_order: u4 = @intCast(@min(max_part_order, @ctz(residuals.len), pred_order_limited));
     const maximum_param: u5 = @intCast(@min(if (bit_depth > 16) MAX_PARAM_5BIT else MAX_PARAM_4BIT, max_param));
 
-    return calcRiceParamEstimate(residuals, maximum_part_order, maximum_param, pred_order);
+    return calcParamEstimate(residuals, maximum_part_order, maximum_param, pred_order);
 }
 
 /// return `.{ bit_count, RiceConfig }`
-fn calcRiceParamExact(
+fn calcParamExact(
     residuals: []const i32,
     max_part_order: u4,
     max_param: u5,
     pred_order: u8,
-) std.meta.Tuple(&.{ u64, RiceConfig }) {
+) std.meta.Tuple(&.{ u64, rice.Config }) {
     std.debug.assert(max_param == MAX_PARAM_4BIT or max_param == MAX_PARAM_5BIT);
 
     const steps: usize = if (MAX_PARAM == MAX_PARAM_4BIT)
@@ -101,7 +101,7 @@ fn calcRiceParamExact(
 
     var bit_counts: [MAX_PART][mm_to_32]Vec = undefined;
     var min_bit_count: u64 = 0;
-    var best_rice_config: RiceConfig = .{ .part_order = max_part_order };
+    var best_rice_config: rice.Config = .{ .part_order = max_part_order };
 
     { // Sum residual rice code length into their smallest partition
         const part_counts = @as(usize, 1) << max_part_order;
@@ -191,8 +191,8 @@ fn calcOtherPartBitCount(
     part_order: u4,
     max_param: u5,
     steps: usize,
-) struct { bit_count: u64, rice_config: RiceConfig } {
-    var rice_config: RiceConfig = .{ .part_order = part_order };
+) struct { bit_count: u64, rice_config: rice.Config } {
+    var rice_config: rice.Config = .{ .part_order = part_order };
     var bit_count: u64 = 0;
 
     const part_counts = @as(usize, 1) << part_order;
@@ -234,16 +234,16 @@ fn calcOtherPartBitCount(
 
 // Copied from flake
 /// return `.{ bit_count, RiceConfig }`
-fn calcRiceParamEstimate(
+fn calcParamEstimate(
     residuals: []const i32,
     max_part_order: u4,
     max_param: u5,
     pred_order: u8,
-) std.meta.Tuple(&.{ u64, RiceConfig }) {
+) std.meta.Tuple(&.{ u64, rice.Config }) {
     var sums: [MAX_ORDER + 1][MAX_PART]u64 = undefined;
     var optimal_bit_count: u64 = std.math.maxInt(usize);
     var optimal_part_order: u6 = undefined;
-    var optimal_config: RiceConfig = undefined;
+    var optimal_config: rice.Config = undefined;
 
     calcSums(residuals, max_part_order, pred_order, &sums);
 
@@ -315,12 +315,12 @@ fn calcOptimalParams(
     max_param: u5,
     pred_order: u8,
     sums: *const [MAX_PART]u64,
-) std.meta.Tuple(&.{ u64, RiceConfig }) {
+) std.meta.Tuple(&.{ u64, rice.Config }) {
     std.debug.assert(pred_order <= 4);
 
     const part_count: usize = @as(usize, 1) << part_order;
     var all_bits: u64 = 0;
-    var config: RiceConfig = .{.part_order = part_order};
+    var config: rice.Config = .{.part_order = part_order};
 
     var part_size: u16 = (blk_size >> part_order) - pred_order;
     for (0..part_count) |i| {

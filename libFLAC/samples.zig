@@ -2,9 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const mode = @import("builtin").mode;
 
-const LEN_PER_CHANNEL = std.math.maxInt(u16);
-const SIZE_PER_CHANNEL = LEN_PER_CHANNEL + 1;
-
 /// Produce slices of mid_channel and side_channel \
 /// \
 /// return:
@@ -22,6 +19,7 @@ pub fn midSideChannels(
         s.* = sideSample(SideT, l, r);
     }
 }
+
 /// Produce a slice of mid_channel \
 /// \
 /// return:

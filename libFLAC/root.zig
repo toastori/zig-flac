@@ -1,8 +1,3 @@
-// -- Private import --
-const sample_iter = @import("samples.zig");
-
-// -- Package --
-
 pub const metadata = @import("metadata.zig");
 
 // -- Types --

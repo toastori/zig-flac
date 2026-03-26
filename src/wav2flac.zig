@@ -55,22 +55,14 @@ fn encode(
 
     const wav_sample_buf = try allocator.alloc(u8, option.frame_size * wav.channels * wav.bytes_per_sample);
     defer allocator.free(wav_sample_buf);
-    const big_samples = try allocator.alloc(i32, option.frame_size * wav.channels);
-    defer allocator.free(big_samples);
-    var arr_samples = blk: {
-        var result: [8][]i32 = undefined;
-        for (0..wav.channels) |i|
-            result[i] = big_samples[(i * option.frame_size)..(i + 1) * option.frame_size];
-        break :blk result;
-    };
-    const samples = arr_samples[0..wav.channels];
 
     var frame_idx: u36 = 0;
     var remain_samples_count: usize = wav.samples_count;
     while (remain_samples_count > 0) : (frame_idx += 1) {
         const read_samples = @min(option.frame_size, remain_samples_count);
-        const samples_read = (try wav.fillSamplesMd5(wav_sample_buf, read_samples, samples, &md5)) orelse break;
-        remain_samples_count -= samples_read[0].len;
+        const samples_read = try wav.fillSamplesMd5(wav_sample_buf, read_samples, flac_enc.samples, &md5);
+        if (samples_read == 0) break;
+        remain_samples_count -= samples_read;
 
         const bytes_written =
             try flac_enc.writeFrame(samples_read, frame_idx, streaminfo.*);

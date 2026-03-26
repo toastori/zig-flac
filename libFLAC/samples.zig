@@ -10,25 +10,25 @@ const SIZE_PER_CHANNEL = LEN_PER_CHANNEL + 1;
 /// return:
 /// - `.{ mid, side }`
 pub fn midSideChannels(
-    SampleT: type,
-    left: []const i32,
-    right: []const i32,
+    SideT: type,
+    block_size: u16,
+    left: [*]const i32,
+    right: [*]const i32,
     mid_dest: []i32,
-    side_dest: []SampleT,
+    side_dest: []SideT,
 ) void {
-    std.debug.assert(left.len == right.len and right.len == mid_dest.len and mid_dest.len == side_dest.len);
-    for (left, right, mid_dest, side_dest) |l, r, *m, *s| {
-        m.* = midSample(SampleT, l, r);
-        s.* = sideSample(SampleT, l, r);
+    for (left[0..block_size], right[0..block_size], mid_dest, side_dest) |l, r, *m, *s| {
+        m.* = midSample(SideT, l, r);
+        s.* = sideSample(SideT, l, r);
     }
 }
 /// Produce a slice of mid_channel \
 /// \
 /// return:
 /// - `.{ mid }`
-pub fn midChannel(left: []const i32, right: []const i32, dest: []i32) []const i32 {
+pub fn midChannel(block_size: u16, left: [*]const i32, right: [*]const i32, dest: []i32) []const i32 {
     std.debug.assert(left.len == right.len and right.len == dest.len);
-    for (left, right, dest) |l, r, *d|
+    for (left[0..block_size], right[0..block_size], dest) |l, r, *d|
         d.* = midSample(l, r);
     return dest;
 }
@@ -37,9 +37,8 @@ pub fn midChannel(left: []const i32, right: []const i32, dest: []i32) []const i3
 /// \
 /// return:
 /// - `.{ side }`
-pub fn sideChannel(SampleT: type, left: []const i32, right: []const i32, dest: []SampleT) []const SampleT {
-    std.debug.assert(left.len == right.len and right.len == dest.len);
-    for (left, right, dest) |l, r, *d|
+pub fn sideChannel(SampleT: type, block_size: u16, left: [*]const i32, right: [*]const i32, dest: []SampleT) []const SampleT {
+    for (left[0..block_size], right[0..block_size], dest) |l, r, *d|
         d.* = sideSample(SampleT, l, r);
     return dest;
 }

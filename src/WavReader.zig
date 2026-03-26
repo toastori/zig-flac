@@ -41,33 +41,34 @@ pub inline fn init(reader: *std.Io.Reader) !@This() {
 /// - `dest` for easier to work with, since its length might be modified
 /// - `null` when no samples to read
 /// - `StreamError.IncompleteStream` when bytes of sample does not fill up all bytes of all channels
-pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32, md5: *Md5.Ctx) !?[][]i32 {
-    std.debug.assert(dest[0].len >= samples);
+pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [8][*]i32, md5: *Md5.Ctx) !usize {
     std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
     const shift_amt: u5 = @intCast(32 - self.bit_depth);
 
     const bytes_read = try self.reader.readSliceShort(buffer[0 .. samples * self.bytes_per_sample * self.channels]);
     if (bytes_read == 0) {
-        return null;
+        return 0;
     } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0)
         return StreamError.IncompleteStream;
 
     const bytes = buffer[0..bytes_read];
     const samples_read = bytes_read / (self.bytes_per_sample * self.channels);
+    std.debug.assert(bytes_read == samples * self.bytes_per_sample * self.channels);
 
+    var dest_slice_holder: [8][]i32 = undefined;
+    for (0..self.channels) |c| {
+        dest_slice_holder[c] = dest[c][0..samples_read];
+    }
+    const dest_slice: []const []i32 = dest_slice_holder[0..self.channels];
+    
     md5.update(bytes);
 
-    self.bytesToSample(bytes, dest);
-
-    const result = dest;
-    for (result) |*channel| {
-        channel.* = channel.*[0..samples_read];
-    }
-
+    self.bytesToSample(bytes, dest_slice);
+    
     // Unsigned to signed
     if (self.bytes_per_sample == 1) {
         const sub_amt = @as(i32, 128) >> @intCast(8 - self.bit_depth);
-        for (result) |ch| {
+        for (dest_slice) |ch| {
             for (ch) |*sample| {
                 sample.* -= sub_amt;
             }
@@ -76,14 +77,14 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [][]i32
 
     // Sign extend
     if (self.bit_depth != 32) {
-        for (result) |ch| {
+        for (dest_slice) |ch| {
             for (ch) |*sample| {
                 sample.* >>= shift_amt;
             }
         }
     }
 
-    return result;
+    return samples_read;
 }
 
 /// return: \

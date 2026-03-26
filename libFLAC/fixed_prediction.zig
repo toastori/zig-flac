@@ -1,10 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-
-const mm_len_32 = std.simd.suggestVectorLength(i32) orelse 1;
-const mm_len_64 = std.simd.suggestVectorLength(i64) orelse 1;
-const VecNormal = @Vector(mm_len_32, i32);
-const VecWide = @Vector(mm_len_64, i64);
+const simd = @import("simd.zig");
 
 // -- CONSTANT --
 
@@ -28,13 +24,22 @@ const COEFF_VECTOR: [4]@Vector(4, i64) = .{
 
 // -- Functions --
 
-pub fn calcResiduals(SampleT: type, comptime wide: Wide, samples: []const SampleT, dest: []i32, order: usize) void {
+pub fn calcResiduals(
+    SampleT: type,
+    comptime wide: Wide,
+    samples: []const align(simd.V_ALIGN_OF(SampleT)) SampleT,
+    dest: []align(simd.V_ALIGN_32) i32,
+    order: usize,
+) void {
     if (SampleT != i32 and SampleT != i64) @compileError("calcResiduals: expect T as i32 or i64");
     if (SampleT == i64 and wide == .normal) @compileError("calcResiduals: expect wide == .wide for SampleT == i64");
     std.debug.assert(samples.len == dest.len);
 
-    const Vec = if (wide == .wide) VecWide else VecNormal;
-    const mm_len = @typeInfo(Vec).vector.len;
+    const Vec = if (wide == .wide) simd.VecI64 else simd.VecI32;
+    const V_LEN = if (wide == .wide) simd.V_LEN_64 else simd.V_LEN_32;
+
+    const offset_samples: [*]const SampleT =
+        @ptrFromInt(@intFromPtr(samples.ptr) - order * @sizeOf(SampleT));
 
     if (order == 0) {
         if (SampleT == i32) {
@@ -52,22 +57,19 @@ pub fn calcResiduals(SampleT: type, comptime wide: Wide, samples: []const Sample
         @splat(COEFF_SCALAR[order][3]),
     };
 
-    var i = order;
-    while (i + mm_len < samples.len) : (i += mm_len) {
+    var i: usize = 0;
+    while (i < samples.len) : (i += V_LEN) {
         const result =
-            calcResidualVec(SampleT, Vec, samples, i, order, coeff);
+            calcResidualVec(SampleT, Vec, samples, offset_samples, i, coeff);
 
         if (wide == .normal) {
-            dest[i..][0..mm_len].* = result;
+            dest[i..].ptr[0..V_LEN].* = result;
         } else {
-            const result_32: VecNormal = @bitCast(result);
-            const di_result: [2][mm_len]i32 = @bitCast(std.simd.deinterlace(2, result_32));
+            const result_32: simd.VecI32 = @bitCast(result);
+            const di_result: [2][V_LEN]i32 = @bitCast(std.simd.deinterlace(2, result_32));
             const di_target = if (comptime builtin.cpu.arch.endian() == .little) 0 else 1;
-            dest[i..][0..mm_len].* = di_result[di_target];
+            dest[i..].ptr[0..V_LEN].* = di_result[di_target];
         }
-    }
-    while (i < samples.len) : (i += 1) {
-        dest[i] = @intCast(calcResidual(SampleT, if (wide == .wide) i64 else i32, samples, i, order));
     }
 }
 
@@ -169,7 +171,7 @@ pub fn bestOrder(
 pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize) R {
     if (T != i32 and T != i64) @compileError("calcResidual: expect T as i32 or i64");
     if (R != i32 and R != i64) @compileError("calcResidual: expect R as i32 or i64");
-    std.debug.assert(n >= order);
+     std.debug.assert(n >= order);
     var prediction: R = 0;
     for (0..order, n - order..) |o, i| {
         prediction += @as(R, samples[i]) * @as(R, COEFF_SCALAR[order][o]);
@@ -180,16 +182,16 @@ pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize
 inline fn calcResidualVec(
     SampleT: type,
     Vec: type,
-    samples: []const SampleT,
+    samples: []const align(simd.V_ALIGN_OF(SampleT)) SampleT,
+    offset_samples: [*]const SampleT,
     idx: usize,
-    order: usize,
     coeff: [4]Vec,
 ) Vec {
     if (SampleT != i32 and SampleT != i64) @compileError("calcResidualVec: expect SampleT == i32 or i64");
-    if (Vec != VecNormal and Vec != VecWide) @compileError("calcResidualVec: expect Vec == VecWide or VecNormal");
+    if (Vec != simd.VecI32 and Vec != simd.VecI64) @compileError("calcResidualVec: expect Vec == VecI32 or VecI64");
 
-    const mm_len = @typeInfo(Vec).vector.len;
-    const VecSampT = @Vector(mm_len, SampleT);
+    const V_LEN = if (Vec == simd.VecI32) simd.V_LEN_32 else simd.V_LEN_64;
+    const VecSampT = @Vector(V_LEN, SampleT);
 
     var curr_samples: Vec = undefined;
     var prev_samples: [4]Vec = @splat(@splat(0));
@@ -198,18 +200,18 @@ inline fn calcResidualVec(
     var prediction: Vec = undefined;
 
     // load previous samples
-    for (&prev_samples, idx - order..) |*p, start|
-        p.* = @as(VecSampT, samples.ptr[start..][0..mm_len].*);
+    for (&prev_samples, idx..) |*p, start|
+        p.* = @as(VecSampT, offset_samples[start..][0..V_LEN].*);
     // load samples
-    curr_samples = @as(VecSampT, samples.ptr[idx..][0..mm_len].*);
+    curr_samples = @as(VecSampT, samples.ptr[idx..][0..V_LEN].*);
 
-    for (&mul_samples, prev_samples, coeff) |*m, p, c| m.* = p * c; // multiply prev samples by coefficient
+    for (&mul_samples, prev_samples, coeff) |*m, p, c| m.* = p *% c; // multiply prev samples by coefficient
     // sum up to prediction
-    sums_temps[0] = mul_samples[0] + mul_samples[1];
-    sums_temps[1] = mul_samples[2] + mul_samples[3];
-    prediction = sums_temps[0] + sums_temps[1];
+    sums_temps[0] = mul_samples[0] +% mul_samples[1];
+    sums_temps[1] = mul_samples[2] +% mul_samples[3];
+    prediction = sums_temps[0] +% sums_temps[1];
     //result
-    return curr_samples - prediction;
+    return curr_samples -% prediction;
 }
 
 // -- Enums --

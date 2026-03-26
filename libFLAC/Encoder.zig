@@ -1,14 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const simd = @import("simd.zig");
+
 const metadata = @import("metadata.zig");
 const samples_fn = @import("samples.zig");
 const rice_code = @import("rice_code.zig");
 const fixed_prediction = @import("fixed_prediction.zig");
 
 const FrameWriter = @import("FrameWriter.zig");
-const MultiChannelIter = @import("samples.zig").MultiChannelIter;
-const SingleChannelIter = @import("samples.zig").SingleChannelIter;
-const SampleIter = @import("samples.zig").SampleIter;
 
 // -- Constants --
 
@@ -20,6 +19,20 @@ const FlacEncoder = @This();
 // Skip fLaC(4) + BlockHeader(1) + BlockLength(3) + Streaminfo(34)
 pub const HEADER_SIZE = 4 + 1 + 3 + 34;
 
+const guard_len_32 = std.simd.suggestVectorLength(i32) orelse 4;
+const guard_front_len_32 = std.simd.suggestVectorLength(i32) orelse 4; // currently have no difference due to no lpc support yet
+const guard_len_64 = std.simd.suggestVectorLength(i64) orelse 4;
+const guard_front_len_64 = std.simd.suggestVectorLength(i64) orelse 4; // currently have no difference due to no lpc support yet
+
+const GUARD_BYTE_32 = guard_len_32 * @sizeOf(i32);
+const GUARD_BYTE_64 = guard_len_64 * @sizeOf(i64);
+
+
+const MID_RES = 2;
+const MID_RAW = 4;
+const SIDE_RES = 3;
+const SIDE_RAW = 5;
+
 // -- Members --
 
 // Settings
@@ -29,42 +42,61 @@ config: Config,
 writer: *std.Io.Writer,
 
 // One time allocation
+/// raw decoded samples
+samples: [8][*]align(simd.V_ALIGN_32) i32 = undefined,
 /// Channel 1~8, or stereo: [left right mid side(conditional)] + raw[mid side(conditional)]
-residuals: [8][*]i32 = undefined,
-side_samples_64: [*]i64 = undefined, // Conditional
-
-const MID_RES = 2;
-const MID_RAW = 4;
-const SIDE_RES = 3;
-const SIDE_RAW = 5;
+residuals: [8][*]align(simd.V_ALIGN_32) i32 = undefined,
+/// Wide samples for 32-bits stereo's side channel
+side_samples_64: [*]align(simd.V_ALIGN_64) i64 = undefined, // Conditional
 
 // -- Initializer --
 
 /// Allocate one time allocated buffers used internally conditionally
 pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, config: Config, bit_depth: u8) error{OutOfMemory}!FlacEncoder {
     var result: FlacEncoder = .{ .writer = writer, .config = config };
+    // increase block_size to the multiple of vector alignment
+    const block_size_aligned32 = ((config.block_size + (simd.V_ALIGN_32 - 1)) / simd.V_ALIGN_32) * simd.V_ALIGN_32;
+    const block_size_aligned64 = ((config.block_size + (simd.V_ALIGN_64 - 1)) / simd.V_ALIGN_64) * simd.V_ALIGN_64;
 
+    // buffer storing raw integer samples
+    // [GUARD_FRONT] [[CH]...[CH]] [GUARD]
+    const sample_buf_len = guard_front_len_32 + config.channels.getNum() * block_size_aligned32 + guard_len_32;
+    const sample_buf = try allocator.alignedAlloc(i32, simd.ALIGNMENT_32, sample_buf_len);
+    errdefer allocator.free(sample_buf);
+    for (0..config.channels.getNum()) |i| {
+        const start = config.block_size * i + guard_front_len_32;
+        result.samples[i] = @alignCast(sample_buf[start..].ptr);
+    }
+
+    // buffers storing residuals
+    // also buffers storing raw samples of channels decorrelation
     switch (config.channels) {
-        _ => {
+        _ => { // Indep Channels
             const channels = config.channels.getNum();
-            const slice = try allocator.alloc(i32, config.block_size * channels);
+            // [GUARD_FRONT] [[CH][GUARD]..[CH][GUARD]]
+            const slice_len = guard_front_len_32 + (block_size_aligned32 + guard_len_32) * channels;
+            const slice = try allocator.alignedAlloc(i32, simd.ALIGNMENT_32, slice_len);
             for (0..channels) |i| {
-                result.residuals[i] = slice[config.block_size * i ..].ptr;
+                const start = config.block_size * i + guard_len_32 * (i + 1);
+                result.residuals[i] = @alignCast(slice[start..].ptr);
             }
         },
-        .stereo_auto => {
+        .stereo_auto => { // Auto Stereo Channels
             const channels_32: u8 = if (bit_depth == 32) 5 else 6;
-            const slice_32 = try allocator.alloc(i32, config.block_size * channels_32);
+            // [GUARD_FRONT] [[CH][GUARD]..[CH][GUARD]]
+            const slice_32_len = guard_front_len_32 + (block_size_aligned32 + guard_len_32) * channels_32;
+            const slice_32 = try allocator.alignedAlloc(i32, simd.ALIGNMENT_32, slice_32_len);
             errdefer allocator.free(slice_32);
-            if (bit_depth == 32) {
-                result.side_samples_64 = (try allocator.alloc(i64, config.block_size)).ptr;
+            for (0..channels_32) |i| {
+                const start = config.block_size * i + guard_len_32 * (i + 1);
+                result.residuals[i] = @alignCast(slice_32[start..].ptr);
             }
-            const idx: []const usize = if (bit_depth == 32)
-                &.{ 0, 1, 2, 3, MID_RAW }
-            else
-                &.{ 0, 1, 2, 3, 4, 5 };
-            for (idx, 0..) |i, c| {
-                result.residuals[i] = slice_32[c * config.block_size ..].ptr;
+            // wide side raw samples
+            if (bit_depth == 32) {
+                // [GUARD_FRONT] [CH] [GUARD]
+                const slice_64_len = guard_front_len_64 + block_size_aligned64 + guard_len_64;
+                const slice_64 = try allocator.alignedAlloc(i64, simd.ALIGNMENT_64, slice_64_len);
+                result.side_samples_64 = @alignCast(slice_64[guard_len_64..].ptr);
             }
         },
     }
@@ -74,12 +106,38 @@ pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, config: Config
 
 /// Clean up allocated slices
 pub fn deinit(self: @This(), allocator: std.mem.Allocator, bit_depth: u8) void {
+    // increase block_size to the multiple of vector alignment
+    const block_size_aligned32 = ((self.config.block_size + (simd.V_ALIGN_32 - 1)) / simd.V_ALIGN_32) * simd.V_ALIGN_32;
+    const block_size_aligned64 = ((self.config.block_size + (simd.V_ALIGN_64 - 1)) / simd.V_ALIGN_64) * simd.V_ALIGN_64;
+
+    // buffer storing raw integer samples
+    // [GUARD_FRONT] [[CH]...[CH]] [GUARD]
+    const sample_buf_len =  guard_front_len_32 + block_size_aligned32 * self.config.channels.getNum() + guard_len_32;
+    const sample_buf_start: [*]i32 = @ptrFromInt(@intFromPtr(self.samples[0]) - GUARD_BYTE_32);
+    allocator.free(sample_buf_start[0..sample_buf_len]);
+    
+    const channels: usize = switch (self.config.channels) {
+        _ => self.config.channels.getNum(),
+        else => if (bit_depth == 32) 5 else 6,
+    };
     switch (self.config.channels) {
-        _ => allocator.free(self.residuals[0][0 .. self.config.channels.getNum() * self.config.block_size]),
+        _ => {
+            // [GUARD_FRONT] [[CH][GUARD]..[CH][GUARD]]
+            const slice_len =  guard_front_len_32 + (block_size_aligned32 + guard_len_32) * channels;
+            const slice_start: [*]i32 = @ptrFromInt(@intFromPtr(self.residuals[0]) - GUARD_BYTE_32);
+            allocator.free(slice_start[0..slice_len]);
+        },
         else => {
-            const channels_32: u8 = if (bit_depth == 32) 5 else 6;
-            allocator.free(self.residuals[0][0 .. self.config.block_size * channels_32]);
-            if (bit_depth == 32) allocator.free(self.side_samples_64[0..self.config.block_size]);
+            // [GUARD_FRONT] [[CH][GUARD]..[CH][GUARD]]
+            const slice_32_len = guard_front_len_32 + (block_size_aligned32 + guard_len_32) * channels;
+            const slice_32_start: [*]i32 = @ptrFromInt(@intFromPtr(self.residuals[0]) - GUARD_BYTE_32);
+            allocator.free(slice_32_start[0..slice_32_len]);
+            if (bit_depth == 32) {
+                // [GUARD_FRONT] [CH] [GUARD]
+                const slice_64_len = guard_front_len_64 + block_size_aligned64 + guard_len_64;
+                const slice_64_start: [*]i64 = @ptrFromInt(@intFromPtr(self.side_samples_64) - GUARD_BYTE_64);
+                allocator.free(slice_64_start[0..slice_64_len]);
+            }
         },
     }
 }
@@ -94,26 +152,18 @@ pub fn deinit(self: @This(), allocator: std.mem.Allocator, bit_depth: u8) void {
 /// - `Error` when writing
 pub fn writeFrame(
     self: @This(),
-    samples: []const []const i32,
+    samples_count: usize,
     frame_idx: u36,
     streaminfo: metadata.StreamInfo,
 ) error{WriteFailed}!u24 {
-    std.debug.assert(samples.len != 0 and
-        ((samples.len == @intFromEnum(self.config.channels) and @as(u8, @intFromEnum(self.config.channels)) <= 8) or
-            (samples.len == 2 and self.config.channels == .stereo_auto)));
-    std.debug.assert(samples[0].len != 0 and samples.len <= self.config.block_size);
-
-    if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
-        for (0..samples.len - 1) |i|
-            std.debug.assert(samples[i].len == samples[i + 1].len);
-    }
+    std.debug.assert(samples_count != 0);
 
     var fwriter_buf: [1024]u64 = undefined;
     var fwriter: FrameWriter = .init(self.writer, &fwriter_buf);
 
     const sample_size: u6 = streaminfo.bit_depth;
-    const block_size: u16 = @intCast(samples[0].len);
-    const ch_type, const subframe_types = self.processChannels(samples, streaminfo.bit_depth);
+    const block_size: u16 = @intCast(samples_count);
+    const ch_type, const subframe_types = self.processChannels(block_size, streaminfo.bit_depth);
 
     // Write header start
     try fwriter.writeHeader(
@@ -129,8 +179,8 @@ pub fn writeFrame(
     );
 
     if (ch_type == .Indep) {
-        for (samples, subframe_types[0..samples.len]) |s, ty| {
-            try writeChannelSubframe(i32, ty, s, &fwriter, streaminfo.bit_depth);
+        for (self.samples[0..streaminfo.channels], subframe_types[0..streaminfo.channels]) |s, ty| {
+            try writeChannelSubframe(i32, ty, s[0..block_size], &fwriter, streaminfo.bit_depth);
         }
         // Close subframe
         try fwriter.writeCrc16();
@@ -147,8 +197,8 @@ pub fn writeFrame(
 
     for (channels) |ch| {
         switch (ch) {
-            .left => try writeChannelSubframe(i32, subframe_types[0], samples[0], &fwriter, sample_size),
-            .right => try writeChannelSubframe(i32, subframe_types[1], samples[1], &fwriter, sample_size),
+            .left => try writeChannelSubframe(i32, subframe_types[0], self.samples[0][0..block_size], &fwriter, sample_size),
+            .right => try writeChannelSubframe(i32, subframe_types[1], self.samples[1][0..block_size], &fwriter, sample_size),
             .mid => try writeChannelSubframe(i32, subframe_types[MID_RES], self.residuals[MID_RAW][0..block_size], &fwriter, sample_size),
             .side => if (streaminfo.bit_depth == 32)
                 try writeChannelSubframe(i64, subframe_types[SIDE_RES], self.side_samples_64[0..block_size], &fwriter, sample_size + 1)
@@ -182,16 +232,16 @@ fn writeChannelSubframe(
 
 fn processChannels(
     self: @This(),
-    samples: []const []const i32,
+    block_size: u16,
     sample_size: u8,
 ) std.meta.Tuple(&.{ ChType, [8]SubframeType }) {
-    const block_size = samples[0].len;
-
+    const channels = self.config.channels.getNum();
+    
     var ch_subframe_types: [8]SubframeType = undefined;
     const ch_type: ChType = switch (self.config.channels) {
         _ => blk: {
-            for (samples, self.residuals[0..samples.len], ch_subframe_types[0..samples.len]) |s, r, *ty| {
-                _, ty.* = chooseSubframeEncoding(i32, sample_size, self.config, s, r[0..block_size]);
+            for (self.samples[0..channels], self.residuals[0..channels], ch_subframe_types[0..channels]) |s, r, *ty| {
+                _, ty.* = chooseSubframeEncoding(i32, sample_size, self.config, s[0..block_size], r[0..block_size]);
             }
             break :blk .Indep;
         },
@@ -201,23 +251,29 @@ fn processChannels(
             // Generate Mid and Side Channels
             if (sample_size == 32) {
                 samples_fn.midSideChannels(
-                        i64,
-                        samples[0],
-                        samples[1],
-                        self.residuals[MID_RAW][0..block_size],
-                        self.side_samples_64[0..block_size],
-                    );
+                    i64,
+                    block_size,
+                    self.samples[0],
+                    self.samples[1],
+                    self.residuals[MID_RAW][0..block_size],
+                    self.side_samples_64[0..block_size],
+                );
             } else {
                 samples_fn.midSideChannels(
                     i32,
-                    samples[0],
-                    samples[1],
+                    block_size,
+                    self.samples[0],
+                    self.samples[1],
                     self.residuals[MID_RAW][0..block_size],
                     self.residuals[SIDE_RAW][0..block_size],
                 );
             }
 
-            const left_right_mid: [3][]const i32 = .{ samples[0], samples[1], self.residuals[MID_RAW][0..block_size] };
+            const left_right_mid: [3][]const align(simd.V_ALIGN_32) i32 = .{
+                self.samples[0][0..block_size],
+                self.samples[1][0..block_size],
+                self.residuals[MID_RAW][0..block_size]
+            };
 
             // Left Right Mid
             for (0..3) |i| {
@@ -265,8 +321,8 @@ fn chooseSubframeEncoding(
     SampleT: type,
     sample_size: u8,
     config: Config,
-    samples: []const SampleT,
-    residuals_dest: []i32,
+    samples: []const align(simd.V_ALIGN_OF(SampleT)) SampleT,
+    residuals_dest: []align(simd.V_ALIGN_32) i32,
 ) std.meta.Tuple(&.{ u64, SubframeType }) {
     // -- Constant -- (First priority)
     if (std.mem.allEqual(SampleT, samples[1..], samples[0]))
@@ -408,7 +464,7 @@ pub const Config = struct {
         pub fn getNum(self: Stereo) u8 {
             return switch (self) {
                 _ => @intFromEnum(self),
-                else => unreachable,
+                else => 2,
             };
         }
     };

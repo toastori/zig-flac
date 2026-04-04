@@ -48,12 +48,17 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [8][*]i
     const bytes_read = try self.reader.readSliceShort(buffer[0 .. samples * self.bytes_per_sample * self.channels]);
     if (bytes_read == 0) {
         return 0;
-    } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0)
+    } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0) {
         return StreamError.IncompleteStream;
+    }
 
     const bytes = buffer[0..bytes_read];
     const samples_read = bytes_read / (self.bytes_per_sample * self.channels);
     std.debug.assert(bytes_read == samples * self.bytes_per_sample * self.channels);
+
+    if (samples_read != samples) {
+        return StreamError.IncompleteStream;
+    }
 
     var dest_slice_holder: [8][]i32 = undefined;
     for (0..self.channels) |c| {

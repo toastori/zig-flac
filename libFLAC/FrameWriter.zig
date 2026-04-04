@@ -148,22 +148,22 @@ pub fn writeHeader(
     // Write block size
     var uncommon_block_size: enum(u6) { none, byte = 8, half = 16 } = .none;
 
-    if (blk: {
+    if (blk: { // 2^v
         const ctz = @ctz(block_size);
         break :blk std.math.isPowerOfTwo(block_size) and ctz <= 15 and ctz >= 8;
     }) {
         try self.writeBits(4, @ctz(block_size));
-    } else if (block_size == 192) {
+    } else if (block_size == 192) { // 192
         try self.writeBits(4, 1);
-    } else if (blk: {
-        const rem = block_size / 144;
-        break :blk std.math.isPowerOfTwo(rem) and @ctz(rem) <= 5 and @ctz(rem) >= 2;
+    } else if (blk: { // 144 * 2^v
+        const ctz: u4 = @intCast(@ctz(block_size));
+        break :blk (block_size >> ctz == 144) and ctz <= 5 and ctz >= 2;
     }) {
-        try self.writeBits(4, @ctz(block_size / 144));
-    } else if (block_size < 0x100) {
+        try self.writeBits(4, @ctz(block_size));
+    } else if (block_size < 0x100) { // 8bits uncommon block size
         try self.writeBits(4, 0b0110);
         uncommon_block_size = .byte;
-    } else {
+    } else { // 16bits uncommon block size
         try self.writeBits(4, 0b0111);
         uncommon_block_size = .half;
     }

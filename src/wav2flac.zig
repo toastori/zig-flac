@@ -1,3 +1,4 @@
+
 const std = @import("std");
 const option = @import("option");
 
@@ -8,15 +9,17 @@ const WavReader = @import("WavReader.zig");
 
 /// Main function for WAV to FLAC
 pub fn main(
-    filename: []const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
+    filename: []const u8,
     streaminfo: *flac.metadata.StreamInfo,
     wav: WavReader,
 ) !void {
-    const file = try std.fs.cwd().createFile(filename, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
+    defer file.close(io);
+    
     var out_buf: [option.buffer_size]u8 = undefined;
-    var file_writer: std.fs.File.Writer = file.writer(&out_buf);
+    var file_writer = file.writer(io, &out_buf);
 
     // Flac File Writer
     // var flac_enc: flac.Encoder = .{ .writer = &file_writer.interface };

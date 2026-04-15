@@ -6,16 +6,12 @@ const flac = @import("flac");
 
 const wav2flac = @import("wav2flac.zig");
 
-pub fn main() !void {
-    // Allocator
-    var gpa = if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}){} else {};
-    defer if (@TypeOf(gpa) != void) std.log.info("gpa: {s}", .{@tagName(gpa.deinit())});
-    const allocator = if (builtin.mode == .Debug) gpa.allocator() else std.heap.smp_allocator;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Args
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
-
+    var args = init.minimal.args.iterate();
     _ = args.next(); // skip exe
 
     const input = args.next();
@@ -25,14 +21,15 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
-    try encodeFile(allocator, input.?, output.?);
+    try encodeFile(allocator, io, input.?, output.?);
 }
 
-fn encodeFile(allocator: std.mem.Allocator, input: []const u8, output: []const u8) !void {
-    const in_file = try std.fs.cwd().openFile(input, .{});
-    defer in_file.close();
+fn encodeFile(gpa: std.mem.Allocator, io: std.Io, input: []const u8, output: []const u8) !void {
+    const in_file = try std.Io.Dir.cwd().openFile(io, input, .{});
+    defer in_file.close(io);
+    
     var in_buf: [option.buffer_size]u8 = undefined;
-    var file_reader: std.fs.File.Reader = in_file.reader(&in_buf);
+    var file_reader = in_file.reader(io, &in_buf);
 
     const wav = try @import("WavReader.zig").init(&file_reader.interface);
 
@@ -41,5 +38,5 @@ fn encodeFile(allocator: std.mem.Allocator, input: []const u8, output: []const u
         std.process.exit(2);
     }; // Flac unsupported format
 
-    try wav2flac.main(output, allocator, &streaminfo, wav);
+    try wav2flac.main(gpa, io, output, &streaminfo, wav);
 }

@@ -25,24 +25,24 @@ const COEFF_VECTOR: [4]@Vector(4, i64) = .{
 // -- Functions --
 
 pub fn calcResiduals(
-    SampleT: type,
+    T: type,
     comptime wide: Wide,
-    samples: []const align(simd.V_ALIGN_OF(SampleT)) SampleT,
-    dest: []align(simd.V_ALIGN_32) i32,
+    samples: []const align(simd.VEC_ALIGN_OF(T)) T,
+    dest: []align(simd.VEC_ALIGN32) i32,
     order: usize,
 ) void {
-    if (SampleT != i32 and SampleT != i64) @compileError("calcResiduals: expect T as i32 or i64");
-    if (SampleT == i64 and wide == .normal) @compileError("calcResiduals: expect wide == .wide for SampleT == i64");
+    if (T != i32 and T != i64) @compileError("expect T as i32 or i64, found " ++ @typeName(T));
+    if (T == i64 and wide == .normal) @compileError("expect wide == .wide for T == i64");
     std.debug.assert(samples.len == dest.len);
 
     const Vec = if (wide == .wide) simd.VecI64 else simd.VecI32;
-    const V_LEN = if (wide == .wide) simd.V_LEN_64 else simd.V_LEN_32;
+    const V_LEN = if (wide == .wide) simd.LEN64 else simd.LEN32;
 
-    const offset_samples: [*]const SampleT =
-        @ptrFromInt(@intFromPtr(samples.ptr) - order * @sizeOf(SampleT));
+    const offset_samples: [*]const T =
+        @ptrFromInt(@intFromPtr(samples.ptr) - order * @sizeOf(T));
 
     if (order == 0) {
-        if (SampleT == i32) {
+        if (T == i32) {
             @memcpy(dest, samples);
         } else {
             for (dest, samples) |*d, s| d.* = @intCast(s);
@@ -60,7 +60,7 @@ pub fn calcResiduals(
     var i: usize = 0;
     while (i < samples.len) : (i += V_LEN) {
         const result =
-            calcResidualVec(SampleT, Vec, samples, offset_samples, i, coeff);
+            calcResidualVec(T, Vec, samples, offset_samples, i, coeff);
 
         if (wide == .normal) {
             dest[i..].ptr[0..V_LEN].* = result;
@@ -86,12 +86,14 @@ inline fn inRangeVec(nums: @Vector(4, u64)) @Vector(4, u64) {
 /// Find the best fixed prediction order by looking for smallest residuals sum \
 /// return `null` if any residual is out of i32 range
 pub fn bestOrder(
-    SampleT: type,
+    T: type,
     comptime wide: Wide,
-    samples: []const SampleT,
+    samples: []const T,
 ) ?u8 {
-    if (SampleT == i64 and wide != .wide) @compileError("fixed_prediction.bestOrder: unexpected SampleT == i64 with wide != .wide");
+    if (T == i64 and wide != .wide) @compileError("expect wide == .wide for T == i64");
     std.debug.assert(samples.len > MAX_ORDER);
+
+    const INVALID_ORDER = std.math.maxInt(u64);
 
     // u64 is sufficient to store sum of all (65535) abs(i33) number <- i32 sample side channel
     // by the calculation: 33 + log2(65535) = 33 + 15.999 ~= 49
@@ -159,18 +161,18 @@ pub fn bestOrder(
     }
 
     inline for (&total_error, abs_or_all) |*err, orall| {
-        if (wide == .wide and !inRange(orall)) err.* = std.math.maxInt(u64);
+        if (wide == .wide and !inRange(orall)) err.* = INVALID_ORDER;
     }
 
     const best_order: u8 = @intCast(std.mem.indexOfMin(u64, &total_error));
 
-    return if (wide == .normal or total_error[best_order] != std.math.maxInt(u64)) best_order else null;
+    return if (wide == .normal or total_error[best_order] != INVALID_ORDER) best_order else null;
 }
 
 /// Calculate the n-th residual
 pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize) R {
-    if (T != i32 and T != i64) @compileError("calcResidual: expect T as i32 or i64");
-    if (R != i32 and R != i64) @compileError("calcResidual: expect R as i32 or i64");
+    if (T != i32 and T != i64) @compileError("expect T as i32 or i64");
+    if (R != i32 and R != i64) @compileError("expect R as i32 or i64");
      std.debug.assert(n >= order);
     var prediction: R = 0;
     for (0..order, n - order..) |o, i| {
@@ -180,18 +182,18 @@ pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize
 }
 
 inline fn calcResidualVec(
-    SampleT: type,
+    T: type,
     Vec: type,
-    samples: []const align(simd.V_ALIGN_OF(SampleT)) SampleT,
-    offset_samples: [*]const SampleT,
+    samples: []const align(simd.VEC_ALIGN_OF(T)) T,
+    offset_samples: [*]const T,
     idx: usize,
     coeff: [4]Vec,
 ) Vec {
-    if (SampleT != i32 and SampleT != i64) @compileError("calcResidualVec: expect SampleT == i32 or i64");
-    if (Vec != simd.VecI32 and Vec != simd.VecI64) @compileError("calcResidualVec: expect Vec == VecI32 or VecI64");
+    if (T != i32 and T != i64) @compileError("expect T == i32 or i64");
+    if (Vec != simd.VecI32 and Vec != simd.VecI64) @compileError("expect Vec == VecI32 or VecI64");
 
-    const V_LEN = if (Vec == simd.VecI32) simd.V_LEN_32 else simd.V_LEN_64;
-    const VecSampT = @Vector(V_LEN, SampleT);
+    const V_LEN = if (Vec == simd.VecI32) simd.LEN32 else simd.LEN64;
+    const VecSampT = @Vector(V_LEN, T);
 
     var curr_samples: Vec = undefined;
     var prev_samples: [4]Vec = @splat(@splat(0));
@@ -204,8 +206,8 @@ inline fn calcResidualVec(
         p.* = @as(VecSampT, offset_samples[start..][0..V_LEN].*);
     // load samples
     curr_samples = @as(VecSampT, samples.ptr[idx..][0..V_LEN].*);
-
-    for (&mul_samples, prev_samples, coeff) |*m, p, c| m.* = p *% c; // multiply prev samples by coefficient
+    // multiply prev samples by coefficient
+    for (&mul_samples, prev_samples, coeff) |*m, p, c| m.* = p *% c;
     // sum up to prediction
     sums_temps[0] = mul_samples[0] +% mul_samples[1];
     sums_temps[1] = mul_samples[2] +% mul_samples[3];

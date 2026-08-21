@@ -3,8 +3,8 @@ const endian = @import("builtin").cpu.arch.endian();
 
 const BLOCK_SIZE = @import("option").frame_size;
 
-const Md5 = @import("Md5.zig");
-const FlacStreaminfo = @import("flac").metadata.StreamInfo;
+const Md5 = @import("md5.zig").Md5;
+const FlacStreaminfo = @import("metadata.zig").StreamInfo;
 
 // -- Members --
 
@@ -41,11 +41,12 @@ pub inline fn init(reader: *std.Io.Reader) !@This() {
 /// - `dest` for easier to work with, since its length might be modified
 /// - `null` when no samples to read
 /// - `StreamError.IncompleteStream` when bytes of sample does not fill up all bytes of all channels
-pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [8][*]i32, md5: *Md5.Ctx) !usize {
-    std.debug.assert(buffer.len >= samples * self.bytes_per_sample * self.channels);
-    const shift_amt: u5 = @intCast(32 - self.bit_depth);
+pub fn fillSamples(self: @This(), buffer: []u8, samples: usize, dest: [8][*]i32, md5: *Md5) !usize {
+    const estimated_bytes = samples * self.bytes_per_sample * self.channels;
 
-    const bytes_read = try self.reader.readSliceShort(buffer[0 .. samples * self.bytes_per_sample * self.channels]);
+    std.debug.assert(buffer.len >= estimated_bytes);
+
+    const bytes_read = try self.reader.readSliceShort(buffer[0..estimated_bytes]);
     if (bytes_read == 0) {
         return 0;
     } else if (bytes_read % (self.channels * self.bytes_per_sample) != 0) {
@@ -56,20 +57,16 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [8][*]i
     const samples_read = bytes_read / (self.bytes_per_sample * self.channels);
     std.debug.assert(bytes_read == samples * self.bytes_per_sample * self.channels);
 
-    if (samples_read != samples) {
-        return StreamError.IncompleteStream;
-    }
-
     var dest_slice_holder: [8][]i32 = undefined;
     for (0..self.channels) |c| {
         dest_slice_holder[c] = dest[c][0..samples_read];
     }
     const dest_slice: []const []i32 = dest_slice_holder[0..self.channels];
-    
+
     md5.update(bytes);
 
-    self.bytesToSample(bytes, dest_slice);
-    
+    bytesToSample(bytes, dest_slice, self.bit_depth, self.channels);
+
     // Unsigned to signed
     if (self.bytes_per_sample == 1) {
         const sub_amt = @as(i32, 128) >> @intCast(8 - self.bit_depth);
@@ -82,6 +79,7 @@ pub fn fillSamplesMd5(self: @This(), buffer: []u8, samples: usize, dest: [8][*]i
 
     // Sign extend
     if (self.bit_depth != 32) {
+        const shift_amt: u5 = @intCast(32 - self.bit_depth);
         for (dest_slice) |ch| {
             for (ch) |*sample| {
                 sample.* >>= shift_amt;
@@ -128,7 +126,8 @@ fn getFmt(self: *@This()) !void {
         try self.reader.discardAll(bytes);
     }
     try self.reader.discardAll(4); // fmt size
-    const codec: enum(u16) { PCM = 1, PCM_EXTEND = 0xfffe } = switch (try self.reader.takeInt(u16, .little)) {
+    const Codec = enum(u16) { PCM = 1, PCM_EXTEND = 0xfffe };
+    const codec: Codec = switch (try self.reader.takeInt(u16, .little)) {
         1, 0xfffe => |c| @enumFromInt(c),
         else => return EncodingError.UnsupportCodec,
     };
@@ -170,10 +169,10 @@ fn getFmt(self: *@This()) !void {
     self.samples_count = data_len / (self.channels * (self.bit_depth / 8));
 }
 
-fn bytesToSample(self: @This(), bytes: []const u8, dest: []const []i32) void {
-    switch (self.bit_depth) {
+fn bytesToSample(bytes: []const u8, dest: []const []i32, bps: u16, channels: u16) void {
+    switch (bps) {
         4, 8 => { // 1 byte
-            switch (self.channels) {
+            switch (channels) {
                 1 => _bytesToSamples(1, 1, bytes, dest),
                 2 => _bytesToSamples(2, 1, bytes, dest),
                 3 => _bytesToSamples(3, 1, bytes, dest),
@@ -186,7 +185,7 @@ fn bytesToSample(self: @This(), bytes: []const u8, dest: []const []i32) void {
             }
         },
         12, 16 => { // 2 bytes
-            switch (self.channels) {
+            switch (channels) {
                 1 => _bytesToSamples(1, 2, bytes, dest),
                 2 => _bytesToSamples(2, 2, bytes, dest),
                 3 => _bytesToSamples(3, 2, bytes, dest),
@@ -199,7 +198,7 @@ fn bytesToSample(self: @This(), bytes: []const u8, dest: []const []i32) void {
             }
         },
         20, 24 => { // 3 bytes
-            switch (self.channels) {
+            switch (channels) {
                 1 => _bytesToSamples(1, 3, bytes, dest),
                 2 => _bytesToSamples(2, 3, bytes, dest),
                 3 => _bytesToSamples(3, 3, bytes, dest),
@@ -212,7 +211,7 @@ fn bytesToSample(self: @This(), bytes: []const u8, dest: []const []i32) void {
             }
         },
         32 => { // 4 bytes
-            switch (self.channels) {
+            switch (channels) {
                 1 => _bytesToSamples(1, 4, bytes, dest),
                 2 => _bytesToSamples(2, 4, bytes, dest),
                 3 => _bytesToSamples(3, 4, bytes, dest),
@@ -228,13 +227,18 @@ fn bytesToSample(self: @This(), bytes: []const u8, dest: []const []i32) void {
     }
 }
 
-fn _bytesToSamples (channels: comptime_int, bytes_depth: comptime_int, bytes: []const u8, dest: []const []i32) void {
-    const samples_read = bytes.len / (bytes_depth * channels);
-    const sample_bytes_start = 4 - bytes_depth;
+fn _bytesToSamples(
+    channels: comptime_int,
+    bytes_per_sample: comptime_int,
+    bytes: []const u8,
+    dest: []const []i32,
+) void {
+    const samples_read = bytes.len / (bytes_per_sample * channels);
+    const sample_bytes_start = 4 - bytes_per_sample;
     var b: usize = 0;
     for (0..samples_read) |i| {
         inline for (0..channels) |ch| {
-            const sample_bytes: *[4]u8 = @alignCast(@ptrCast(&dest[ch][i]));
+            const sample_bytes: *[4]u8 = @ptrCast(@alignCast(&dest[ch][i]));
             inline for (sample_bytes_start..4) |s_b| {
                 sample_bytes[s_b] = bytes[b];
                 b += 1;

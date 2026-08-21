@@ -21,17 +21,19 @@ pub fn build(b: *std.Build) void {
     const libflac_mod = b.addModule(
         "libFLAC",
         .{
-            .root_source_file = b.path("libFLAC/root.zig"),
+            .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
             .code_model = if (full_debug) .extreme else .default,
             .strip = strip,
         },
     );
-
+    libflac_mod.addImport("option", option_mod);
+    if (link_ossl) libflac_mod.linkSystemLibrary("crypto", .{});
+    
     // Executable Module
     const exe_mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/cli.zig"),
         .target = target,
         .optimize = optimize,
         .strip = strip,
@@ -39,7 +41,6 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("option", option_mod);
     exe_mod.addImport("flac", libflac_mod);
-    if (link_ossl) exe_mod.linkSystemLibrary("crypto", .{});
 
     // Executable
     const exe = b.addExecutable(.{

@@ -1,7 +1,7 @@
 # FLAC encoder (and maybe decoder)
 A flac encoder written entirely in zig for learning purposes \
 \
-Zig version 0.15.2
+Zig version 0.16.0
 ## Done
 - Encoding
   - Format

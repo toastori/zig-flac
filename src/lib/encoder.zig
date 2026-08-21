@@ -312,10 +312,10 @@ pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Write
 
 /// Write subframe of a channel (any kind: single, mid, side)
 fn writeChannelSubframe(
-    SampleT: type,
+    T: type,
     fwriter: *FrameWriter,
     subframe_type: SubframeType.Encoding,
-    samples: []align(simd.VEC_ALIGN_OF(SampleT)) const SampleT,
+    samples: []align(simd.VEC_ALIGN_OF(T)) const T,
     bit_depth: u6,
 ) Writer.Error!void {
     switch (subframe_type) {
@@ -324,12 +324,12 @@ fn writeChannelSubframe(
             c.sample,
         ),
         .verbatim => try fwriter.writeVerbatimSubframe(
-            SampleT,
+            T,
             bit_depth,
             samples,
         ),
         .fixed => |f| try fwriter.writeFixedSubframe(
-            SampleT,
+            T,
             bit_depth,
             samples,
             f.residuals,
@@ -461,36 +461,36 @@ fn processChannels(
 
 /// Evaluate best encoding for a subframe
 fn chooseSubframeEncoding(
-    SampleT: type,
-    samples: []align(simd.VEC_ALIGN_OF(SampleT)) const SampleT,
+    T: type,
+    samples: []align(simd.VEC_ALIGN_OF(T)) const T,
     residuals_dst: []align(simd.VEC_ALIGN32) i32,
     bit_depth: u6,
     rice_order_max: u4,
     rice_param_max: u5,
 ) struct { u64, SubframeType.Encoding } {
     // -- Constant -- (First priority)
-    if (std.mem.allEqual(SampleT, samples[1..], samples[0])) {
-        return .{ @bitSizeOf(SampleT), .{ .constant = .{ .sample = samples[0] } } };
+    if (std.mem.allEqual(T, samples[1..], samples[0])) {
+        return .{ @bitSizeOf(T), .{ .constant = .{ .sample = samples[0] } } };
     }
 
     // Verbatim as default
     var subframe_type: SubframeType.Encoding = .{ .verbatim = {} };
-    var subframe_size: u64 = @as(usize, samples.len) * @bitSizeOf(SampleT);
+    var subframe_size: u64 = @as(usize, samples.len) * @bitSizeOf(T);
 
     // -- Verbatim -- (Least priority)
     if (samples.len <= fixed.MAX_ORDER) return .{ subframe_size, subframe_type };
 
     // -- Fixed Prediction --
-    const best_fixed_order = if (bit_depth < 28 and SampleT == i32)
-        fixed.bestOrder(SampleT, .normal, samples) orelse unreachable
+    const best_fixed_order = if (bit_depth < 28 and T == i32)
+        fixed.bestOrder(T, .normal, samples) orelse unreachable
     else
-        fixed.bestOrder(SampleT, .wide, samples) orelse return .{ subframe_size, subframe_type };
+        fixed.bestOrder(T, .wide, samples) orelse return .{ subframe_size, subframe_type };
 
     // Prepare residuals
-    if (bit_depth < 28 and SampleT == i32) {
-        fixed.calcResiduals(SampleT, .normal, samples, residuals_dst, best_fixed_order);
+    if (bit_depth < 28 and T == i32) {
+        fixed.calcResiduals(T, .normal, samples, residuals_dst, best_fixed_order);
     } else {
-        fixed.calcResiduals(SampleT, .wide, samples, residuals_dst, best_fixed_order);
+        fixed.calcResiduals(T, .wide, samples, residuals_dst, best_fixed_order);
     }
 
     const fixed_size, const rice_config = rice.calcParams(

@@ -1,6 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
+const flac_type = @import("type.zig");
 const simd = @import("simd.zig");
+const SampleVariant = flac_type.SampleVariant;
 
 // -- CONSTANT --
 
@@ -25,24 +28,23 @@ const COEFF_VECTOR: [4]@Vector(4, i64) = .{
 // -- Functions --
 
 pub fn calcResiduals(
-    T: type,
-    comptime wide: Wide,
-    samples: []const align(simd.VEC_ALIGN_OF(T)) T,
+    comptime sv: SampleVariant,
+    comptime wide_accumulator: bool,
+    samples: []const align(simd.VEC_ALIGN_OF(sv.T())) sv.T(),
     dest: []align(simd.VEC_ALIGN32) i32,
     order: usize,
 ) void {
-    if (T != i32 and T != i64) @compileError("expect T as i32 or i64, found " ++ @typeName(T));
-    if (T == i64 and wide == .normal) @compileError("expect wide == .wide for T == i64");
+    if (sv == .wide and !wide_accumulator) @compileError("non wide accumulator shouldn't compile.");
     std.debug.assert(samples.len == dest.len);
 
-    const Vec = if (wide == .wide) simd.VecI64 else simd.VecI32;
-    const V_LEN = if (wide == .wide) simd.LEN64 else simd.LEN32;
+    const Vec = if (wide_accumulator) simd.VecI64 else simd.VecI32;
+    const V_LEN = if (wide_accumulator) simd.LEN64 else simd.LEN32;
 
-    const offset_samples: [*]const T =
-        @ptrFromInt(@intFromPtr(samples.ptr) - order * @sizeOf(T));
+    const offset_samples: [*]const sv.T() =
+        @ptrFromInt(@intFromPtr(samples.ptr) - order * @sizeOf(sv.T()));
 
     if (order == 0) {
-        if (T == i32) {
+        if (sv == .normal) {
             @memcpy(dest, samples);
         } else {
             for (dest, samples) |*d, s| d.* = @intCast(s);
@@ -60,9 +62,9 @@ pub fn calcResiduals(
     var i: usize = 0;
     while (i < samples.len) : (i += V_LEN) {
         const result =
-            calcResidualVec(T, Vec, samples, offset_samples, i, coeff);
+            calcResidualVec(sv, wide_accumulator, samples, offset_samples, i, coeff);
 
-        if (wide == .normal) {
+        if (!wide_accumulator) {
             dest[i..].ptr[0..V_LEN].* = result;
         } else {
             const result_32: simd.VecI32 = @bitCast(result);
@@ -78,19 +80,14 @@ inline fn inRange(num: u64) bool {
     return num <= std.math.maxInt(i32);
 }
 
-inline fn inRangeVec(nums: @Vector(4, u64)) @Vector(4, u64) {
-    const limit: @Vector(4, u64) = @splat(std.math.maxInt(i32));
-    return nums <= limit;
-}
-
 /// Find the best fixed prediction order by looking for smallest residuals sum \
 /// return `null` if any residual is out of i32 range
 pub fn bestOrder(
-    T: type,
-    comptime wide: Wide,
-    samples: []const T,
+    comptime sv: SampleVariant,
+    comptime wide_accumulator: bool,
+    samples: []const sv.T(),
 ) ?u8 {
-    if (T == i64 and wide != .wide) @compileError("expect wide == .wide for T == i64");
+    if (sv == .wide and !wide_accumulator) @compileError("non wide accumulator shouldn't compile.");
     std.debug.assert(samples.len > MAX_ORDER);
 
     const INVALID_ORDER = std.math.maxInt(u64);
@@ -123,10 +120,10 @@ pub fn bestOrder(
         total_error[2] += @abs(abs2);
         total_error[3] += @abs(abs3);
 
-        if (wide == .wide) abs_or_all[0] |= abs0;
-        if (wide == .wide) abs_or_all[1] |= abs1;
-        if (wide == .wide) abs_or_all[2] |= abs2;
-        if (wide == .wide) abs_or_all[3] |= abs3;
+        if (wide_accumulator) abs_or_all[0] |= abs0;
+        if (wide_accumulator) abs_or_all[1] |= abs1;
+        if (wide_accumulator) abs_or_all[2] |= abs2;
+        if (wide_accumulator) abs_or_all[3] |= abs3;
     }
 
     for (4..samples.len) |i| {
@@ -153,47 +150,34 @@ pub fn bestOrder(
         total_error[3] += @abs(abs3);
         total_error[4] += @abs(abs4);
 
-        if (wide == .wide) abs_or_all[0] |= abs0;
-        if (wide == .wide) abs_or_all[1] |= abs1;
-        if (wide == .wide) abs_or_all[2] |= abs2;
-        if (wide == .wide) abs_or_all[3] |= abs3;
-        if (wide == .wide) abs_or_all[4] |= abs4;
+        if (wide_accumulator) abs_or_all[0] |= abs0;
+        if (wide_accumulator) abs_or_all[1] |= abs1;
+        if (wide_accumulator) abs_or_all[2] |= abs2;
+        if (wide_accumulator) abs_or_all[3] |= abs3;
+        if (wide_accumulator) abs_or_all[4] |= abs4;
     }
 
     inline for (&total_error, abs_or_all) |*err, orall| {
-        if (wide == .wide and !inRange(orall)) err.* = INVALID_ORDER;
+        if (wide_accumulator and !inRange(orall)) err.* = INVALID_ORDER;
     }
 
     const best_order: u8 = @intCast(std.mem.indexOfMin(u64, &total_error));
 
-    return if (wide == .normal or total_error[best_order] != INVALID_ORDER) best_order else null;
-}
-
-/// Calculate the n-th residual
-pub fn calcResidual(T: type, R: type, samples: []const T, n: usize, order: usize) R {
-    if (T != i32 and T != i64) @compileError("expect T as i32 or i64");
-    if (R != i32 and R != i64) @compileError("expect R as i32 or i64");
-     std.debug.assert(n >= order);
-    var prediction: R = 0;
-    for (0..order, n - order..) |o, i| {
-        prediction += @as(R, samples[i]) * @as(R, COEFF_SCALAR[order][o]);
-    }
-    return @intCast(@as(R, samples[n]) - prediction);
+    return if (!wide_accumulator or total_error[best_order] != INVALID_ORDER) best_order else null;
 }
 
 inline fn calcResidualVec(
-    T: type,
-    Vec: type,
-    samples: []const align(simd.VEC_ALIGN_OF(T)) T,
-    offset_samples: [*]const T,
+    comptime sv: SampleVariant,
+    comptime wide_accumulator: bool,
+    samples: []const align(simd.VEC_ALIGN_OF(sv.T())) sv.T(),
+    offset_samples: [*]const sv.T(),
     idx: usize,
-    coeff: [4]Vec,
-) Vec {
-    if (T != i32 and T != i64) @compileError("expect T == i32 or i64");
-    if (Vec != simd.VecI32 and Vec != simd.VecI64) @compileError("expect Vec == VecI32 or VecI64");
+    coeff: [4] if (wide_accumulator) simd.VecI64 else simd.VecI32,
+) if (wide_accumulator) simd.VecI64 else simd.VecI32 {
+    const Vec = if (wide_accumulator) simd.VecI64 else simd.VecI32;
 
     const V_LEN = if (Vec == simd.VecI32) simd.LEN32 else simd.LEN64;
-    const VecSampT = @Vector(V_LEN, T);
+    const VecSampT = @Vector(V_LEN, sv.T());
 
     var curr_samples: Vec = undefined;
     var prev_samples: [4]Vec = @splat(@splat(0));
@@ -215,6 +199,3 @@ inline fn calcResidualVec(
     //result
     return curr_samples -% prediction;
 }
-
-// -- Enums --
-pub const Wide = enum { wide, normal };

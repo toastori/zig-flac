@@ -1,8 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
+const flac_type = @import("type.zig");
 const metadata = @import("metadata.zig");
 const rice = @import("rice.zig");
-
+const Channel = flac_type.Channel;
 const Crc16 = @import("crc16.zig");
 const Writer = std.Io.Writer;
 const FrameWriter = @This();
@@ -140,7 +142,7 @@ pub fn writeHeader(
     self: *FrameWriter,
     frame_number: u36,
     bit_depth: u8, // 0 if `Streaminfo.bit_depth` is consistant across the file
-    channels: Channels,
+    channels: Channel,
     block_size: u16,
     sample_rate: u24, // 0 if `Streaminfo.sample_rate` is consistant across the file
     is_fixed_size: bool,
@@ -204,8 +206,7 @@ pub fn writeHeader(
         },
     );
     // Write channels
-    std.debug.assert(@as(u8, @intFromEnum(channels)) <= 10);
-    try self.writeBits(4, @intFromEnum(channels));
+    try self.writeBits(4, channels.get_int());
     // Write bit depth
     try self.writeBits(
         4,
@@ -263,6 +264,7 @@ pub fn writeConstantSubframe(
 ) Writer.Error!void {
     // subframe Header: syncBit[0](1) + Constant Coding[000000](6) + WastedBits[0](1)
     try self.writeBits(8, 0);
+    // Waste bits unary code takes the same digits as waste bits itself, doesn't worth one more call
     try self.writeBitsSigned(bps + waste_bits, @bitCast(sample << waste_bits));
 }
 
@@ -290,15 +292,13 @@ pub fn writeVerbatimSubframe(
 
 pub fn writeFixedSubframe(
     self: *FrameWriter,
-    T: type,
-    samples: []const T,
+    warmup_samples: [4]i64,
     residuals: []i32,
     order: u8,
     rice_config: rice.Config,
     bps: u6,
     waste_bits: u6,
 ) Writer.Error!void {
-    if (T != i32 and T != i64) @compileError("expect T as i32 or i64, found " ++ @typeName(T));
     const param_len: u6 = @intFromEnum(rice_config.method) + 4;
     const part_count = @as(usize, 1) << rice_config.part_order;
     const escape_code: u5 = if (rice_config.method == .FOUR) 0b1111 else 0b11111;
@@ -307,12 +307,12 @@ pub fn writeFixedSubframe(
     if (waste_bits == 0) {
         try self.writeBits(8, (8 | order) << 1);
     } else {
-        try self.writeBits(8, ((8 | order) << 1) + 1);
+        try self.writeBits(8, ((8 | order) << 1) | 1);
         try self.writeBits(waste_bits, 1);
     }
     // Write unencoded warm-up samples
     for (0..order) |i| {
-        try self.writeBitsSigned(bps, @as(if (T == i32) u32 else u64, @bitCast(samples[i])));
+        try self.writeBitsSigned(bps, @bitCast(warmup_samples[i]));
     }
 
     // Rice code with N bits param(2) + Partition order(4)
@@ -379,19 +379,3 @@ pub fn writeRicePart(self: *FrameWriter, zigzags: []u32, param: u5) Writer.Error
         try self.writeBits(@as(u8, param) + 1, mask | rice_code.rem);
     }
 }
-
-// -- Enums --
-
-pub const Channels = enum(u8) {
-    stereo_left_side = 8,
-    stereo_side_right = 9,
-    stereo_mid_side = 10,
-    _, // actual - 1
-
-    pub fn simple(channels: u8) Channels {
-        return switch (channels) {
-            1...8 => @enumFromInt(channels - 1),
-            else => unreachable,
-        };
-    }
-};

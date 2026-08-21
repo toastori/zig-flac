@@ -17,6 +17,7 @@ const Encoder = @This();
 config: Config,
 writer: *Writer,
 md5: Md5,
+fwriter_buf: []u64 = undefined,
 // One time allocation
 /// Raw samples. channel 1~8, or stereo [left right mid side(32bits)]
 samples: [8][*]align(simd.VEC_ALIGN32) i32 = undefined,
@@ -47,6 +48,16 @@ pub fn init(
     std.debug.assert(config.channels > 0 and config.channels <= 8);
 
     var result: Encoder = .{ .writer = writer, .config = config, .md5 = .init(.{}) };
+    // frame writer buffer (allocate large enough so no checks during encoding)
+    const fwriter_buf = try gpa.alloc(u64, std.math.divCeil(usize, maxFrameBytes(
+        config.block_size,
+        config.bit_depth,
+        config.channels,
+        config.feature.compute_waste_bits,
+    ), 8) catch unreachable);
+    errdefer gpa.free(fwriter_buf);
+    result.fwriter_buf = fwriter_buf;
+
     // increase block_size to the multiple of vector length
     // TODO 0.17.x replace with @divCeil(config.blovk_size_max, simd.VEC_ALIGN) * simd.VEC_ALIGN;
     const block_len32 =
@@ -100,6 +111,8 @@ pub fn init(
 /// Clean up allocated slices
 pub fn deinit(self: @This(), gpa: Allocator) void {
     const config = self.config;
+
+    gpa.free(self.fwriter_buf);
 
     // increase block_size to the multiple of vector alignment
     // TODO 0.17.x replace with @divCeil(config.blovk_size_max, simd.VEC_ALIGN) * simd.VEC_ALIGN;
@@ -209,8 +222,7 @@ pub fn writeVorbisComment(self: @This(), last_metadata: bool) Writer.Error!void 
 /// - `Error` when writing
 pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Writer.Error!u24 {
     std.debug.assert(frame_info.samples_count != 0);
-    var fwriter_buf: [1024]u64 = undefined;
-    var fwriter: FrameWriter = .init(self.writer, &fwriter_buf);
+    var fwriter: FrameWriter = .init(self.writer, self.fwriter_buf);
 
     const subframe_type = self.processChannels(
         frame_info.bit_depth,
@@ -280,14 +292,7 @@ fn writeChannelSubframe(
         },
         .fixed => |f| {
             const bps = bit_depth - f.waste_bits;
-            try fwriter.writeFixedSubframe(
-                f.warmup_samples,
-                f.residuals,
-                f.order,
-                f.rice_config,
-                bps,
-                f.waste_bits
-            );
+            try fwriter.writeFixedSubframe(f.warmup_samples, f.residuals, f.order, f.rice_config, bps, f.waste_bits);
         },
         // else => unreachable, // TODO
     }
@@ -546,6 +551,20 @@ fn autoSamples(self: Encoder, channel: StereoChannel, len: usize) []align(simd.V
     };
 }
 
+fn maxFrameBytes(block_size: u16, bit_depth: u6, channels: u4, stereo_decorrelation: bool) usize {
+    // header
+    // 4 half bytes + frame_no + unusual blocksize + unusual samplerate + crc8
+    const header_max: usize = 2 + 7 + 2 + 2 + 1;
+    const subframe_header_max: usize = 8;
+    // data (estimate verbatim as max, plus 1 more channel as free space)
+    const bps: usize = if (channels == 2 and stereo_decorrelation) bit_depth + 1 else bit_depth;
+    const byte_per_sample: usize = std.math.divCeil(usize, bps, 8) catch unreachable;
+    const data_estimate = @as(usize, block_size) * byte_per_sample * (channels + 1);
+    // footer (crc16)
+    const footer = 2;
+    return header_max + subframe_header_max * channels + data_estimate + footer;
+}
+
 fn autoResiduals(self: Encoder, channel: StereoChannel, len: usize) []align(simd.VEC_ALIGN32) i32 {
     std.debug.assert(self.config.feature.stereo_decorrelation == true);
     return switch (channel) {
@@ -639,7 +658,7 @@ const SubframeType = union(enum) {
         fixed: struct {
             waste_bits: u6,
             order: u8,
-            residuals: []i32,
+            residuals: []const i32,
             warmup_samples: [4]i64,
             rice_config: rice.Config,
         },

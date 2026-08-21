@@ -208,7 +208,6 @@ pub fn writeVorbisComment(self: @This(), last_metadata: bool) Writer.Error!void 
 /// - `Error` when writing
 pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Writer.Error!u24 {
     std.debug.assert(frame_info.samples_count != 0);
-
     var fwriter_buf: [1024]u64 = undefined;
     var fwriter: FrameWriter = .init(self.writer, &fwriter_buf);
 
@@ -238,10 +237,8 @@ pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Write
     if (subframe_type == .indep) {
         for (0..frame_info.channels) |ch| {
             try writeChannelSubframe(
-                i32,
                 &fwriter,
                 subframe_type.indep[ch],
-                self.samples[ch][0..frame_info.samples_count],
                 frame_info.bit_depth,
             );
         }
@@ -263,45 +260,25 @@ pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Write
     for (channels) |ch| {
         switch (ch) {
             .left => try writeChannelSubframe(
-                i32,
                 &fwriter,
                 subframe_type.stereo_auto.left,
-                self.autoSamples(.left, frame_info.samples_count),
                 frame_info.bit_depth,
             ),
             .right => try writeChannelSubframe(
-                i32,
                 &fwriter,
                 subframe_type.stereo_auto.right,
-                self.autoSamples(.right, frame_info.samples_count),
                 frame_info.bit_depth,
             ),
             .mid => try writeChannelSubframe(
-                i32,
                 &fwriter,
                 subframe_type.stereo_auto.mid,
-                self.autoSamples(.mid, frame_info.samples_count),
                 frame_info.bit_depth,
             ),
-            .side => {
-                if (frame_info.bit_depth == 32) {
-                    try writeChannelSubframe(
-                        i64,
-                        &fwriter,
-                        subframe_type.stereo_auto.side,
-                        self.samples64[0..frame_info.samples_count],
-                        frame_info.bit_depth + 1,
-                    );
-                } else {
-                    try writeChannelSubframe(
-                        i32,
-                        &fwriter,
-                        subframe_type.stereo_auto.side,
-                        self.autoSamples(.side, frame_info.samples_count),
-                        frame_info.bit_depth + 1,
-                    );
-                }
-            },
+            .side => try writeChannelSubframe(
+                &fwriter,
+                subframe_type.stereo_auto.side,
+                frame_info.bit_depth + 1,
+            ),
         }
     }
 
@@ -312,30 +289,45 @@ pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Write
 
 /// Write subframe of a channel (any kind: single, mid, side)
 fn writeChannelSubframe(
-    T: type,
     fwriter: *FrameWriter,
     subframe_type: SubframeType.Encoding,
-    samples: []align(simd.VEC_ALIGN_OF(T)) const T,
     bit_depth: u6,
 ) Writer.Error!void {
     switch (subframe_type) {
-        .constant => |c| try fwriter.writeConstantSubframe(
-            bit_depth,
-            c.sample,
-        ),
-        .verbatim => try fwriter.writeVerbatimSubframe(
-            T,
-            bit_depth,
-            samples,
-        ),
-        .fixed => |f| try fwriter.writeFixedSubframe(
-            T,
-            bit_depth,
-            samples,
-            f.residuals,
-            f.order,
-            f.rice_config,
-        ),
+        .constant => |c| {
+            const bps = bit_depth - c.waste_bits;
+            try fwriter.writeConstantSubframe(c.sample, bps, c.waste_bits);
+        },
+        .verbatim => |v| {
+            const bps = bit_depth - v.waste_bits;
+            try switch (v.samples) {
+                .normal => |samples| fwriter.writeVerbatimSubframe(i32, samples, bps, v.waste_bits),
+                .wide => |samples| fwriter.writeVerbatimSubframe(i64, samples, bps, v.waste_bits),
+            };
+        },
+        .fixed => |f| {
+            const bps = bit_depth - f.waste_bits;
+            try switch (f.samples) {
+                .normal => |samples| fwriter.writeFixedSubframe(
+                    i32,
+                    samples,
+                    f.residuals,
+                    f.order,
+                    f.rice_config,
+                    bps,
+                    f.waste_bits,
+                ),
+                .wide => |samples| fwriter.writeFixedSubframe(
+                    i64,
+                    samples,
+                    f.residuals,
+                    f.order,
+                    f.rice_config,
+                    bps,
+                    f.waste_bits,
+                ),
+            };
+        },
         // else => unreachable, // TODO
     }
 }
@@ -381,55 +373,83 @@ fn processChannels(
             }
 
             // Evaulate each channels
-            // Left
-            frame_size_l, result.stereo_auto.left = chooseSubframeEncoding(
-                i32,
-                self.autoSamples(.left, samples_count),
-                self.autoResiduals(.left, samples_count),
-                bit_depth,
-                self.config.max_rice_order,
-                self.config.max_rice_param,
-            );
-
-            // Right
-            frame_size_r, result.stereo_auto.right = chooseSubframeEncoding(
-                i32,
-                self.autoSamples(.right, samples_count),
-                self.autoResiduals(.right, samples_count),
-                bit_depth,
-                self.config.max_rice_order,
-                self.config.max_rice_param,
-            );
-
-            // Mid
-            frame_size_m, result.stereo_auto.mid = chooseSubframeEncoding(
-                i32,
-                self.autoSamples(.mid, samples_count),
-                self.autoResiduals(.mid, samples_count),
-                bit_depth,
-                self.config.max_rice_order,
-                self.config.max_rice_param,
-            );
-
-            // Side
-            frame_size_s, result.stereo_auto.side = switch (bit_depth) {
-                32 => chooseSubframeEncoding(
-                    i64,
-                    self.samples64[0..samples_count],
-                    self.autoResiduals(.side, samples_count),
-                    bit_depth,
-                    self.config.max_rice_order,
-                    self.config.max_rice_param,
-                ),
-                else => chooseSubframeEncoding(
+            { // Left
+                const samples = self.autoSamples(.left, samples_count);
+                const waste_bits = calcWasteBits(i32, samples, samples, bit_depth);
+                frame_size_l, result.stereo_auto.left = chooseSubframeEncoding(
                     i32,
-                    self.autoSamples(.side, samples_count),
-                    self.autoResiduals(.side, samples_count),
-                    bit_depth,
+                    samples,
+                    self.autoResiduals(.left, samples_count),
                     self.config.max_rice_order,
                     self.config.max_rice_param,
-                ),
-            };
+                    bit_depth,
+                    waste_bits,
+                );
+            }
+            { // Right
+                const samples = self.autoSamples(.right, samples_count);
+                const waste_bits = calcWasteBits(i32, samples, samples, bit_depth);
+                frame_size_r, result.stereo_auto.right = chooseSubframeEncoding(
+                    i32,
+                    samples,
+                    self.autoResiduals(.right, samples_count),
+                    self.config.max_rice_order,
+                    self.config.max_rice_param,
+                    bit_depth,
+                    waste_bits,
+                );
+            }
+            { // Mid
+                const samples = self.autoSamples(.mid, samples_count);
+                const waste_bits = calcWasteBits(i32, samples, samples, bit_depth);
+                frame_size_m, result.stereo_auto.mid = chooseSubframeEncoding(
+                    i32,
+                    samples,
+                    self.autoResiduals(.mid, samples_count),
+                    self.config.max_rice_order,
+                    self.config.max_rice_param,
+                    bit_depth,
+                    waste_bits,
+                );
+            }
+            { // Side
+                const waste_bits = switch (bit_depth) {
+                    32 => calcWasteBits(
+                        i64,
+                        self.samples64[0..samples_count],
+                        self.autoSamples(.side, samples_count),
+                        bit_depth + 1,
+                    ),
+                    else => calcWasteBits(
+                        i32,
+                        self.autoSamples(.side, samples_count),
+                        self.autoSamples(.side, samples_count),
+                        bit_depth + 1,
+                    ),
+                };
+                frame_size_s, result.stereo_auto.side =
+                    if (bit_depth == 32 and waste_bits == 0) side_p: {
+                        break :side_p chooseSubframeEncoding(
+                            i64,
+                            self.samples64[0..samples_count],
+                            self.autoResiduals(.side, samples_count),
+                            self.config.max_rice_order,
+                            self.config.max_rice_param,
+                            bit_depth + 1,
+                            0,
+                        );
+                    } else side_p: {
+                        break :side_p chooseSubframeEncoding(
+                            i32,
+                            self.autoSamples(.side, samples_count),
+                            self.autoResiduals(.side, samples_count),
+                            self.config.max_rice_order,
+                            self.config.max_rice_param,
+                            bit_depth + 1,
+                            waste_bits,
+                        );
+                    };
+            }
 
             // Choose stereo decorrelation format
             const sum: [4]u64 = .{ // match the order as ChType
@@ -445,13 +465,17 @@ fn processChannels(
         else => {
             var result: SubframeType = .{ .indep = undefined };
             for (0..channels) |ch| {
+                const samples = self.samples[ch][0..samples_count];
+                const residuals = self.residuals[ch][0..samples_count];
+                const waste_bits = calcWasteBits(i32, samples, samples, bit_depth);
                 _, result.indep[ch] = chooseSubframeEncoding(
                     i32,
-                    self.samples[ch][0..samples_count],
-                    self.residuals[ch][0..samples_count],
-                    bit_depth,
+                    samples,
+                    residuals,
                     self.config.max_rice_order,
                     self.config.max_rice_param,
+                    bit_depth,
+                    waste_bits,
                 );
             }
             return result;
@@ -464,30 +488,43 @@ fn chooseSubframeEncoding(
     T: type,
     samples: []align(simd.VEC_ALIGN_OF(T)) const T,
     residuals_dst: []align(simd.VEC_ALIGN32) i32,
-    bit_depth: u6,
     rice_order_max: u4,
     rice_param_max: u5,
+    bit_depth: u6,
+    waste_bits: u6,
 ) struct { u64, SubframeType.Encoding } {
+    const bps = bit_depth - waste_bits;
     // -- Constant -- (First priority)
+    if (bps == 0) {
+        return .{ bps, .{ .constant = .{ .waste_bits = waste_bits, .sample = undefined } } };
+    }
     if (std.mem.allEqual(T, samples[1..], samples[0])) {
-        return .{ @bitSizeOf(T), .{ .constant = .{ .sample = samples[0] } } };
+        return .{ bps, .{ .constant = .{ .waste_bits = waste_bits, .sample = samples[0] } } };
     }
 
     // Verbatim as default
-    var subframe_type: SubframeType.Encoding = .{ .verbatim = {} };
-    var subframe_size: u64 = @as(usize, samples.len) * @bitSizeOf(T);
+    var subframe_type: SubframeType.Encoding =
+        .{ .verbatim = .{
+            .waste_bits = waste_bits,
+            .samples = switch (T) {
+                i32 => .{ .normal = samples },
+                i64 => .{ .wide = samples },
+                else => unreachable,
+            },
+        } };
+    var subframe_size: u64 = samples.len * bps;
 
     // -- Verbatim -- (Least priority)
     if (samples.len <= fixed.MAX_ORDER) return .{ subframe_size, subframe_type };
 
     // -- Fixed Prediction --
-    const best_fixed_order = if (bit_depth < 28 and T == i32)
+    const best_fixed_order = if (bps < 28 and T == i32)
         fixed.bestOrder(T, .normal, samples) orelse unreachable
     else
         fixed.bestOrder(T, .wide, samples) orelse return .{ subframe_size, subframe_type };
 
     // Prepare residuals
-    if (bit_depth < 28 and T == i32) {
+    if (bps < 28 and T == i32) {
         fixed.calcResiduals(T, .normal, samples, residuals_dst, best_fixed_order);
     } else {
         fixed.calcResiduals(T, .wide, samples, residuals_dst, best_fixed_order);
@@ -497,19 +534,41 @@ fn chooseSubframeEncoding(
         residuals_dst,
         rice_order_max,
         rice_param_max,
-        bit_depth,
+        bps,
         best_fixed_order,
     );
     if (fixed_size < subframe_size) {
         subframe_size = fixed_size;
         subframe_type = .{ .fixed = .{
+            .waste_bits = waste_bits,
             .order = best_fixed_order,
             .residuals = residuals_dst,
+            .samples = switch (T) {
+                i32 => .{ .normal = samples },
+                i64 => .{ .wide = samples },
+                else => unreachable,
+            },
             .rice_config = rice_config,
         } };
     }
 
     return .{ subframe_size, subframe_type };
+}
+
+fn calcWasteBits(T: type, samples: []T, wasted_dest: []i32, bps: u6) u6 {
+    var or_all: T = 0;
+    for (samples) |s| {
+        or_all |= s;
+    }
+    const waste_bits = if (or_all == 0) bps else @ctz(or_all);
+
+    if (waste_bits != 0 and waste_bits != bps) {
+        for (samples, wasted_dest) |s, *dest| {
+            dest.* = @intCast(s >> @intCast(waste_bits));
+        }
+    }
+
+    return @intCast(waste_bits);
 }
 
 fn autoSamples(self: Encoder, channel: StereoChannel, len: usize) []align(simd.VEC_ALIGN32) i32 {
@@ -605,12 +664,18 @@ const SubframeType = union(enum) {
 
     pub const Encoding = union(enum) {
         constant: struct {
+            waste_bits: u6,
             sample: i64,
         },
-        verbatim: void,
+        verbatim: struct {
+            waste_bits: u6,
+            samples: SampleT,
+        },
         fixed: struct {
+            waste_bits: u6,
             order: u8,
             residuals: []i32,
+            samples: SampleT,
             rice_config: rice.Config,
         },
         // linear: struct {
@@ -619,5 +684,7 @@ const SubframeType = union(enum) {
         //     partition_order: u8 = undefined,
         //     residuals: []isize,
         // },
+
+        pub const SampleT = union(enum) { normal: []const i32, wide: []const i64 };
     };
 };

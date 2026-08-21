@@ -255,45 +255,61 @@ pub fn writeHeader(
 
 /// Write subframe in Constant encoding \
 /// Wasted Bits in Constant Subframe makes no sense at all (?
-pub fn writeConstantSubframe(self: *FrameWriter, bps: u6, sample: i64) Writer.Error!void {
+pub fn writeConstantSubframe(
+    self: *FrameWriter,
+    sample: i64,
+    bps: u6,
+    waste_bits: u6,
+) Writer.Error!void {
     // subframe Header: syncBit[0](1) + Constant Coding[000000](6) + WastedBits[0](1)
     try self.writeBits(8, 0);
-    try self.writeBitsSigned(bps, @bitCast(sample));
+    try self.writeBitsSigned(bps + waste_bits, @bitCast(sample << waste_bits));
 }
 
 /// Write subframe in Verbatim encoding
 pub fn writeVerbatimSubframe(
     self: *FrameWriter,
     T: type,
-    bps: u6,
     samples: []const T,
+    bps: u6,
+    waste_bits: u6,
 ) Writer.Error!void {
     if (T != i32 and T != i64) @compileError("expect T as i32 or i64, found " ++ @typeName(T));
-    // Subframe Header: SyncBit[0](1) + Verbatim Coding[000001](6) + WastedBits[0](1)
-    try self.writeBits(8, 1 << 1);
+    // Subframe Header: SyncBit[0](1) + Verbatim Coding[000001](6) + WastedBits[F](1)
+    if (waste_bits == 0) {
+        try self.writeBits(8, 0b10);
+    } else {
+        try self.writeBits(8, 0b11);
+        try self.writeBits(waste_bits, 1);
+    }
 
     for (samples) |sample| {
-        const sample_u: if (T == i32) u32 else u64 = @bitCast(sample);
-        try self.writeBitsSigned(bps, sample_u);
+        try self.writeBitsSigned(bps, @bitCast(@as(i64, @intCast(sample))));
     }
 }
 
 pub fn writeFixedSubframe(
     self: *FrameWriter,
     T: type,
-    bps: u6,
     samples: []const T,
     residuals: []i32,
     order: u8,
     rice_config: rice.Config,
+    bps: u6,
+    waste_bits: u6,
 ) Writer.Error!void {
     if (T != i32 and T != i64) @compileError("expect T as i32 or i64, found " ++ @typeName(T));
     const param_len: u6 = @intFromEnum(rice_config.method) + 4;
     const part_count = @as(usize, 1) << rice_config.part_order;
     const escape_code: u5 = if (rice_config.method == .FOUR) 0b1111 else 0b11111;
 
-    // Subframe Header: SyncBit[0](1) + Fixed Coding[001NNN](6) + WastedBits[0](1)
-    try self.writeBits(8, (8 | order) << 1);
+    // Subframe Header: SyncBit[0](1) + Fixed Coding[001NNN](6) + WastedBits[F](1)
+    if (waste_bits == 0) {
+        try self.writeBits(8, (8 | order) << 1);
+    } else {
+        try self.writeBits(8, ((8 | order) << 1) + 1);
+        try self.writeBits(waste_bits, 1);
+    }
     // Write unencoded warm-up samples
     for (0..order) |i| {
         try self.writeBitsSigned(bps, @as(if (T == i32) u32 else u64, @bitCast(samples[i])));
@@ -314,7 +330,7 @@ pub fn writeFixedSubframe(
         var part_param = param;
         const part_residuals = remain_residuals[0..part_len];
 
-        if (param == escape_code) if_blk: { // Escaped TODO 32bits bug
+        if (param == escape_code) if_blk: { // Escaped
             @branchHint(.cold);
             // Calc minimum bits to store the numbers
             var res_max: i32 = 0;
@@ -342,7 +358,7 @@ pub fn writeFixedSubframe(
             }
             continue;
         }
-        // Normal
+        // Rice Coded
         // Calculate zigzags for the partition
         var zigzags: []u32 = @ptrCast(part_residuals);
         for (0..zigzags.len) |i| zigzags[i] = rice.calcZigzag(part_residuals[i]);

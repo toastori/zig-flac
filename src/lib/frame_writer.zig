@@ -309,9 +309,8 @@ pub fn writeFixedSubframe(
     bps: u6,
     waste_bits: u6,
 ) Writer.Error!void {
-    const param_len: u6 = @intFromEnum(rice_config.method) + 4;
-    const part_count = @as(usize, 1) << rice_config.part_order;
-    const escape_code: u5 = if (rice_config.method == .FOUR) 0b1111 else 0b11111;
+    const param_len = rice_config.method.headerBits();
+    const part_count = rice_config.partCounts();
 
     // Subframe Header: SyncBit[0](1) + Fixed Coding[001NNN](6) + WastedBits[F](1)
     if (waste_bits == 0) {
@@ -337,42 +336,27 @@ pub fn writeFixedSubframe(
             part_len = residuals.len >> rice_config.part_order;
         }
 
-        var part_param = param;
         const part_residuals = remain_residuals[0..part_len];
 
-        if (param == escape_code) if_blk: { // Escaped
-            @branchHint(.cold);
-            // Calc minimum bits to store the numbers
-            var res_max: i32 = 0;
-            var or_all: i32 = 0;
-            for (part_residuals) |r| {
-                res_max |= r ^ (r >> 31);
-                or_all |= r;
-            }
-            const bits_per_sample =
-                if (or_all == 0) 0 else if (res_max == 0) 1 else (@clz(res_max) ^ 31) + 2;
-            // Flac cannot hold 32bits escaped samples, so need to fall back to param=30
-            if (bits_per_sample >= 32) {
-                part_param = 30;
-                break :if_blk;
-            }
+        if (param.isEscape()) { // Escaped
+            @branchHint(.unlikely);
             // Write rice param
-            try self.writeBits(param_len, part_param);
+            try self.writeBits(param_len, 0b1111 | (@intFromEnum(rice_config.method) << 4));
             // Write bits per sample (of escape partition)
-            try self.writeBits(5, @intCast(bits_per_sample));
+            try self.writeBits(5, param.escapeBits());
             // Write nothing if bits per sample is 0
-            if (bits_per_sample == 0) continue;
+            if (param.escapeBits() == 0) continue;
             // Write escaped samples
             for (part_residuals) |r| {
-                try self.writeBitsSigned(@intCast(bits_per_sample), @as(u32, @bitCast(r)));
+                try self.writeBitsSigned(@intCast(param.escapeBits()), @as(u32, @bitCast(r)));
             }
             continue;
         }
         // Rice Coded
         // Write rice param
-        try self.writeBits(param_len, part_param);
+        try self.writeBits(param_len, param.p);
         // Write rice coded residuals
-        try self.writeRicePart(part_residuals, part_param);
+        try self.writeRicePart(part_residuals, @intCast(param.p));
     }
 }
 

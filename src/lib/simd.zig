@@ -14,8 +14,36 @@ pub const ALIGNMENT64: std.mem.Alignment = .fromByteUnits(VEC_BYTES64);
 
 pub const VecI32 = @Vector(LEN32, i32);
 pub const VecU32 = @Vector(LEN32, u32);
+pub const VecI32s = @Vector(LEN64, i32);
+pub const VecU32s = @Vector(LEN64, u32);
 pub const VecI64 = @Vector(LEN64, i64);
 pub const VecU64 = @Vector(LEN64, u64);
+
+pub const rice = struct {
+    pub const LEN64R = @min(32, LEN64);
+    pub const CHUNK32 = std.math.divCeil(comptime_int, 32, LEN64R) catch unreachable;
+
+    pub const VecI32s = @Vector(LEN64R, i32);
+    pub const VecU32s = @Vector(LEN64R, u32);
+    pub const VecI64 = @Vector(LEN64R, i64);
+    pub const VecU64 = @Vector(LEN64R, u64);
+
+    pub const ONES: rice.VecU64 = @splat(std.math.maxInt(u64));
+    pub const PARAMS: [rice.CHUNK32]rice.VecU64 = blk: {
+        var iotas: [rice.CHUNK32]rice.VecU64 = @splat(std.simd.iota(u64, rice.LEN64R));
+        for (&iotas, 0..) |*iota, i| {
+            iota.* += @splat(rice.LEN64R * i);
+        }
+        break :blk iotas;
+    };
+    pub const PARAM_P1: [rice.CHUNK32]rice.VecU64 = blk: {
+        var iotas: [rice.CHUNK32]rice.VecU64 = @splat(std.simd.iota(u64, rice.LEN64R));
+        for (&iotas, 0..) |*iota, i| {
+            iota.* += @splat(rice.LEN64R * i + 1);
+        }
+        break :blk iotas;
+    };
+};
 
 pub fn VEC_ALIGN_OF(T: type) comptime_int {
     return switch (@typeInfo(T)) {

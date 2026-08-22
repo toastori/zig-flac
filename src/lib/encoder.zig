@@ -17,14 +17,17 @@ const Encoder = @This();
 config: Config,
 writer: *Writer,
 md5: Md5,
-fwriter_buf: []u64 = undefined,
 // One time allocation
+fwriter_buf: []u64 = undefined,
 /// Raw samples. channel 1~8, or stereo [left right mid side(32bits)]
 samples: [8][*]align(simd.VEC_ALIGN32) i32 = undefined,
 /// Wide raw value samples for 32-bits stereo's side channel
 samples64: [*]align(simd.VEC_ALIGN64) i64 = undefined, // Conditional
 /// Residuals. channel 1~8, or stereo: [left right mid side]
 residuals: [8][*]align(simd.VEC_ALIGN32) i32 = undefined,
+// Rice calculation
+rice_sum_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64 = undefined,
+rice_max_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64 = undefined,
 
 // -- Constants --
 
@@ -57,6 +60,12 @@ pub fn init(
     ), 8) catch unreachable);
     errdefer gpa.free(fwriter_buf);
     result.fwriter_buf = fwriter_buf;
+
+    result.rice_sum_buf = try gpa.create(@TypeOf(result.rice_sum_buf.*));
+    errdefer gpa.destroy(result.rice_sum_buf);
+
+    result.rice_max_buf = try gpa.create(@TypeOf(result.rice_max_buf.*));
+    errdefer gpa.destroy(result.rice_max_buf);
 
     // increase block_size to the multiple of vector length
     // TODO 0.17.x replace with @divCeil(config.blovk_size_max, simd.VEC_ALIGN) * simd.VEC_ALIGN;
@@ -113,6 +122,8 @@ pub fn deinit(self: @This(), gpa: Allocator) void {
     const config = self.config;
 
     gpa.free(self.fwriter_buf);
+    gpa.destroy(self.rice_sum_buf);
+    gpa.destroy(self.rice_max_buf);
 
     // increase block_size to the multiple of vector alignment
     // TODO 0.17.x replace with @divCeil(config.blovk_size_max, simd.VEC_ALIGN) * simd.VEC_ALIGN;
@@ -348,6 +359,8 @@ fn processChannels(
                     self.autoResiduals(.left, samples_count),
                     self.config.feature.max_rice_order,
                     self.config.feature.max_rice_param,
+                    self.rice_sum_buf,
+                    self.rice_max_buf,
                     bit_depth,
                     waste_bits,
                 );
@@ -361,6 +374,8 @@ fn processChannels(
                     self.autoResiduals(.right, samples_count),
                     self.config.feature.max_rice_order,
                     self.config.feature.max_rice_param,
+                    self.rice_sum_buf,
+                    self.rice_max_buf,
                     bit_depth,
                     waste_bits,
                 );
@@ -374,6 +389,8 @@ fn processChannels(
                     self.autoResiduals(.mid, samples_count),
                     self.config.feature.max_rice_order,
                     self.config.feature.max_rice_param,
+                    self.rice_sum_buf,
+                    self.rice_max_buf,
                     bit_depth,
                     waste_bits,
                 );
@@ -401,6 +418,8 @@ fn processChannels(
                             self.autoResiduals(.side, samples_count),
                             self.config.feature.max_rice_order,
                             self.config.feature.max_rice_param,
+                            self.rice_sum_buf,
+                            self.rice_max_buf,
                             bit_depth + 1,
                             0,
                         );
@@ -411,6 +430,8 @@ fn processChannels(
                             self.autoResiduals(.side, samples_count),
                             self.config.feature.max_rice_order,
                             self.config.feature.max_rice_param,
+                            self.rice_sum_buf,
+                            self.rice_max_buf,
                             bit_depth + 1,
                             waste_bits,
                         );
@@ -444,6 +465,8 @@ fn processChannels(
                     residuals,
                     self.config.feature.max_rice_order,
                     self.config.feature.max_rice_param,
+                    self.rice_sum_buf,
+                    self.rice_max_buf,
                     bit_depth,
                     waste_bits,
                 );
@@ -454,15 +477,19 @@ fn processChannels(
 }
 
 /// Evaluate best encoding for a subframe
+///
+/// return `.{ bit_size, SubframeEncoding }`
 fn chooseSubframeEncoding(
     comptime sv: SampleVariant,
     samples: []align(simd.VEC_ALIGN_OF(sv.T())) sv.T(),
     residuals_dst: []align(simd.VEC_ALIGN32) i32,
     rice_order_max: u4,
     rice_param_max: u5,
+    rice_sum_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64,
+    rice_max_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64,
     bit_depth: u6,
     waste_bits: u6,
-) struct { u64, SubframeType.Encoding } {
+) @Tuple(&.{ u64, SubframeType.Encoding }) {
     const bps = bit_depth - waste_bits;
     // -- Constant -- (First priority)
     if (bps == 0) {
@@ -481,16 +508,16 @@ fn chooseSubframeEncoding(
                 .wide => .{ .wide = samples },
             },
         } };
-    var subframe_size: u64 = samples.len * bps;
+    var bit_size: u64 = samples.len * bps;
 
     // -- Verbatim -- (Least priority)
-    if (samples.len <= fixed.MAX_ORDER) return .{ subframe_size, subframe_type };
+    if (samples.len <= fixed.MAX_ORDER) return .{ bit_size, subframe_type };
 
     // -- Fixed Prediction --
     const best_fixed_order = if (bps < 28 and sv == .normal)
         fixed.bestOrder(sv, false, samples) orelse unreachable
     else
-        fixed.bestOrder(sv, true, samples) orelse return .{ subframe_size, subframe_type };
+        fixed.bestOrder(sv, true, samples) orelse return .{ bit_size, subframe_type };
 
     // Prepare residuals
     if (bps < 28 and sv == .normal) {
@@ -503,11 +530,13 @@ fn chooseSubframeEncoding(
         residuals_dst,
         rice_order_max,
         rice_param_max,
+        rice_sum_buf,
+        rice_max_buf,
         bps,
         best_fixed_order,
     );
-    if (fixed_size < subframe_size) {
-        subframe_size = fixed_size;
+    if (fixed_size < bit_size) {
+        bit_size = fixed_size;
         subframe_type = .{ .fixed = .{
             .order = best_fixed_order,
             .residuals = residuals_dst,
@@ -521,7 +550,7 @@ fn chooseSubframeEncoding(
         } };
     }
 
-    return .{ subframe_size, subframe_type };
+    return .{ bit_size, subframe_type };
 }
 
 fn calcWasteBits(comptime sv: SampleVariant, samples: []sv.T(), wasted_dest: []i32, bps: u6) u6 {

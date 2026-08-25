@@ -408,11 +408,6 @@ fn selectBestConfig_vector(
     pred_order: u8,
     samples_cnt: u16,
 ) @Tuple(&.{ u64, Config }) {
-    // Partition 0 backups for partition order 1..
-    var sums0: [ORDER_MAX]u64 = undefined;
-    var bits0: [ORDER_MAX]u64 = undefined;
-    var params0: [ORDER_MAX]Config.Param = undefined;
-
     var opt_bits: u64 = std.math.maxInt(u64);
     var opt_cfg: Config = undefined;
 
@@ -439,40 +434,29 @@ fn selectBestConfig_vector(
             const _maxs = &maxs[order];
             const _params = &cfg_params[order];
 
-            bits0[order - 1] = processEscape_vector(_maxs, _params, part_cnt, part_len, pred_order);
-            sums0[order - 1] = _sums[0];
-            params0[order - 1] = _params[0];
-            processParams_vector(_sums, _maxs, _params, param_max, part_cnt, part_len);
-        }
-    }
-    // Partition order 1..
-    // Process partition 0s
-    processParamsP0_vector(&sums0, &bits0, &params0, order_max, param_max, pred_order, samples_cnt);
-    // Calculate and compare bits for part order 1..
-    {
-        var order: u4 = 1;
-        while (order <= order_max) : (order += 1) {
-            const part_cnt = @as(u64, 1) << order;
-            const _bits0 = bits0[order - 1];
-            const _params0 = params0[order - 1];
-            const _maxs = &maxs[order];
-            const _params = &cfg_params[order];
+            // bits0[order - 1] =
+            processEscape_vector(_maxs, _params, part_cnt, part_len, pred_order);
+            // sums0[order - 1] = _sums[0];
+            // params0[order - 1] = _params[0];
+            processParams_vector(_sums, _maxs, _params, param_max, part_cnt, part_len, pred_order);
 
-            var method: Config.Method = if (_params0.isRice2()) .FIVE else .FOUR;
-            if (param_max > PARAM4_MAX and method == .FOUR) {
-                for (_params[1..part_cnt]) |param| {
+            // Evaluate rice method
+            var method: Config.Method = .FOUR;
+            if (param_max > PARAM4_MAX) {
+                for (_params[0..part_cnt]) |param| {
                     if (param.isRice2()) method = .FIVE;
                 }
             }
 
-            var bits: u64 = @as(u64, method.headerBits()) * part_cnt + _bits0;
-            for (_maxs[1..part_cnt]) |_bits| bits += _bits;
+            // Calculate total bits
+            var bits: u64 = @as(u64, method.headerBits()) * part_cnt;
+            for (_maxs[0..part_cnt]) |_bits| bits += _bits;
 
+            // Update optimal
             if (bits < opt_bits) {
-                _params[0] = _params0;
                 opt_bits = bits;
                 opt_cfg = .{
-                    .part_order = order,
+                    .part_order = @intCast(order),
                     .method = method,
                     .params = _params[0..part_cnt],
                 };
@@ -507,7 +491,7 @@ fn processEscape_vector(
     part_cnt: usize,
     part_len: u16,
     pred_order: u8,
-) u64 {
+) void {
     const vlanes = @min(simd.LEN64R, PART_MAX);
     const V = @Vector(vlanes, u64);
     const VecU8 = @Vector(vlanes, u8);
@@ -533,7 +517,7 @@ fn processEscape_vector(
         const part_bits = header_size +% bits *% part_lenV;
         escape_bits[idx..][0..vlanes].* = @select(u64, invalids, intmaxV, part_bits);
     }
-    return escape_bits[0] - part_bits0 * pred_order;
+    escape_bits[0] -= part_bits0 * pred_order;
 }
 
 fn processParams_scalar(
@@ -570,11 +554,15 @@ fn processParams_vector(
     param_max: u5,
     part_cnt: usize,
     part_len: u16,
+    pred_order: u8,
 ) void {
     const vlanes = @min(simd.LEN64R, PART_MAX);
     const V = @Vector(vlanes, u64);
     const VecU8 = @Vector(vlanes, u8);
     const VecU6 = @Vector(vlanes, u6);
+
+    const param0 = rice_params[0];
+    const bits0 = min_bits[0];
 
     const ones: VecU6 = @splat(1);
     const part_lenV: V = @splat(part_len);
@@ -624,68 +612,15 @@ fn processParams_vector(
     }
 
     // The real partition0 will be process much later
-}
-
-fn processParamsP0_vector(
-    noalias abs_sums0: *const [ORDER_MAX]u64,
-    noalias bits0: *[ORDER_MAX]u64,
-    noalias params0: *[ORDER_MAX]Config.Param,
-    order_max: u4,
-    param_max: u5,
-    pred_order: u8,
-    samples_cnt: u16,
-) void {
-    const vlanes = @min(simd.LEN64R, ORDER_MAX);
-    const V = @Vector(vlanes, u64);
-    const VecU8 = @Vector(vlanes, u8);
-
-    const ones: V = @splat(1);
-    const vlanesV: V = @splat(vlanes);
-    const pred_orderV: V = @splat(pred_order);
-    const samples_cntV: V = @splat(samples_cnt);
-
-    var ordersV: V = std.simd.iota(u64, vlanes) + ones;
-    var part_lenV: V = (samples_cntV >> @intCast(ordersV)) - pred_orderV;
-    var part_len_lsr1V: V = part_lenV >> @intCast(ones);
-
-    var idx: usize = 0;
-    while (true) {
-        var paramV: V = @splat(0);
-        var param_add1V: V = @splat(1);
-        var param_sub1V: V = undefined;
-
-        const abs_sumV: V = abs_sums0[idx..][0..vlanes].*;
-        const min_bitsV: *[vlanes]u64 = bits0[idx..][0..vlanes];
-        const rice_paramsV: *[vlanes]u8 = std.mem.sliceAsBytes(params0)[idx..][0..vlanes];
-
-        { // param == 0
-            const lhs = param_add1V *% part_lenV;
-            // Calculate bits first
-            const bits: V = lhs +% (abs_sumV << @intCast(ones)) -% part_len_lsr1V;
-            const smaller = bits < min_bitsV.*;
-            rice_paramsV.* = @select(u8, smaller, @as(VecU8, @intCast(paramV)), rice_paramsV.*);
-            min_bitsV.* = @select(u64, smaller, bits, min_bitsV.*);
-        }
-        var param: u5 = 1;
-        while (param <= param_max) : (param += 1) {
-            param_sub1V = paramV;
-            paramV = param_add1V;
-            param_add1V += ones;
-
-            const lhs = param_add1V *% part_lenV;
-            // Calculate bits first
-            const bits: V = lhs +% (abs_sumV >> @intCast(param_sub1V)) -% part_len_lsr1V;
-            // Compare and store
-            const smaller = bits < min_bitsV.*;
-            rice_paramsV.* = @select(u8, smaller, @as(VecU8, @intCast(paramV)), rice_paramsV.*);
-            min_bitsV.* = @select(u64, smaller, bits, min_bitsV.*);
-        }
-
-        idx += vlanes;
-        if (idx >= order_max) break;
-        ordersV += vlanesV;
-        part_lenV = (samples_cntV >> @intCast(ordersV)) - pred_orderV;
-        part_len_lsr1V = part_lenV >> @intCast(ones);
+    const p = 0;
+    rice_params[p] = param0;
+    min_bits[p] = bits0;
+    const part_len0 = part_len - pred_order;
+    param = 0;
+    while (param <= param_max) : (param += 1) {
+        const bits = calcPartSize(part_len0, param, abs_sums[p]);
+        if (bits < min_bits[p]) rice_params[p] = .{ .p = @intCast(param) };
+        if (bits < min_bits[p]) min_bits[p] = bits;
     }
 }
 

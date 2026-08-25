@@ -1,7 +1,7 @@
 const std = @import("std");
 const endian = @import("builtin").cpu.arch.endian();
 
-const BLOCK_SIZE = @import("option").frame_size;
+const BLOCK_SIZE = 4096;
 
 const Md5 = @import("md5.zig").Md5;
 const FlacStreaminfo = @import("metadata.zig").StreamInfo;

@@ -1,4 +1,8 @@
 const std = @import("std");
+const option = @import("option");
+const Root = @This();
+
+pub const do_simd = std.simd.suggestVectorLength(i64) != null and option.do_simd;
 
 pub const LEN32 = std.simd.suggestVectorLength(i32) orelse 1;
 pub const LEN64 = std.simd.suggestVectorLength(i64) orelse 1;
@@ -20,6 +24,7 @@ pub const VecI64 = @Vector(LEN64, i64);
 pub const VecU64 = @Vector(LEN64, u64);
 
 pub const rice = struct {
+    pub const do_simd = Root.do_simd;
     pub const LEN64R = @min(32, LEN64);
     pub const CHUNK32 = std.math.divCeil(comptime_int, 32, LEN64R) catch unreachable;
 

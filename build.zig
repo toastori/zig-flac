@@ -9,11 +9,9 @@ pub fn build(b: *std.Build) void {
     // Define Options
     const option = b.addOptions();
     const link_ossl = b.option(bool, "link_ossl", "dynamically link openssl as dependency (default: false)") orelse false;
-    const d_buffer_size = b.option(usize, "buffer_size", "Set buffer size of reader and writer (default: 4096)") orelse 4096;
-    const d_frame_size = b.option(u16, "frame_size", "Set frame size of encoder (default: 4096)") orelse 4096;
+    const do_simd = b.option(bool, "simd", "compile with manual simd variant code if target accept (default: true)") orelse true;
     option.addOption(bool, "link_ossl", link_ossl);
-    option.addOption(usize, "buffer_size", d_buffer_size);
-    option.addOption(usize, "frame_size", d_frame_size);
+    option.addOption(bool, "do_simd", do_simd);
 
     const option_mod = option.createModule();
 
@@ -30,7 +28,7 @@ pub fn build(b: *std.Build) void {
     );
     libflac_mod.addImport("option", option_mod);
     if (link_ossl) libflac_mod.linkSystemLibrary("crypto", .{});
-    
+
     // Executable Module
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/cli.zig"),
@@ -39,7 +37,6 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
         .link_libc = link_ossl,
     });
-    exe_mod.addImport("option", option_mod);
     exe_mod.addImport("flac", libflac_mod);
 
     // Executable
@@ -76,7 +73,7 @@ pub fn build(b: *std.Build) void {
 
     const check_exe = b.step("check", "Build on save check (no emit bin)");
     check_exe.dependOn(&exe_check.step);
-    
+
     const exe_bc = b.addInstallFile(exe_check.getEmittedLlvmBc(), "llvm/llvm.bc");
     const exe_bc_step = b.step("llvm-bc", "Emit LLVM BC of entire exe");
     exe_bc_step.dependOn(&exe_bc.step);

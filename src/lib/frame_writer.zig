@@ -310,7 +310,6 @@ pub fn writeFixedSubframe(
     waste_bits: u6,
 ) Writer.Error!void {
     const param_len = rice_config.method.headerBits();
-    const part_count = rice_config.partCounts();
 
     // Subframe Header: SyncBit[0](1) + Fixed Coding[001NNN](6) + WastedBits[F](1)
     if (waste_bits == 0) {
@@ -330,7 +329,7 @@ pub fn writeFixedSubframe(
     // Write Rice codes
     var remain_residuals = residuals[order..];
     var part_len = (residuals.len >> rice_config.part_order) - order;
-    for (rice_config.params[0..part_count]) |param| { // Partition
+    for (rice_config.params) |param| { // Partition
         defer { // Update part_size and residual start after every iteration
             remain_residuals = remain_residuals[part_len..];
             part_len = residuals.len >> rice_config.part_order;

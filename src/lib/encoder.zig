@@ -26,8 +26,9 @@ samples64: [*]align(simd.VEC_ALIGN64) i64 = undefined, // Conditional
 /// Residuals. channel 1~8, or stereo: [left right mid side]
 residuals: [8][*]align(simd.VEC_ALIGN32) i32 = undefined,
 // Rice calculation
-rice_sum_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64 = undefined,
-rice_max_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64 = undefined,
+rice_sum_buf: *[rice.ORDER_MAX + 1][rice.PART_MAX]u64 = undefined,
+rice_max_buf: *[rice.ORDER_MAX + 1][rice.PART_MAX]u64 = undefined,
+rice_params: [*][rice.ORDER_MAX + 1][rice.PART_MAX]rice.Config.Param = undefined,
 
 // -- Constants --
 
@@ -67,6 +68,7 @@ pub fn init(
     result.rice_max_buf = try gpa.create(@TypeOf(result.rice_max_buf.*));
     errdefer gpa.destroy(result.rice_max_buf);
 
+
     // increase block_size to the multiple of vector length
     // TODO 0.17.x replace with @divCeil(config.blovk_size_max, simd.VEC_ALIGN) * simd.VEC_ALIGN;
     const block_len32 =
@@ -74,10 +76,14 @@ pub fn init(
     const block_len64 =
         @divFloor(config.block_size + simd.LEN64 - 1, simd.LEN64) * simd.LEN64;
     const buf_count32 =
-        if (config.feature.stereo_decorrelation == true and config.channels != 1)
+        if (config.feature.stereo_decorrelation == true and config.channels == 2)
             @max(config.channels, 4)
         else
             config.channels;
+
+    result.rice_params =
+        (try gpa.alloc([rice.ORDER_MAX + 1][rice.PART_MAX]rice.Config.Param, buf_count32)).ptr;
+    errdefer gpa.free(result.rice_params[0..config.channels]);
 
     // 32 bits raw samples buffers
     // [GUARD_FRONT] [[CH]...[CH]] [GUARD]
@@ -132,10 +138,12 @@ pub fn deinit(self: @This(), gpa: Allocator) void {
     const block_len64 =
         @divFloor(config.block_size + simd.LEN64 - 1, simd.LEN64) * simd.LEN64;
     const buf_count32 =
-        if (config.feature.stereo_decorrelation == true and config.channels != 1)
+        if (config.feature.stereo_decorrelation == true and config.channels == 2)
             @max(config.channels, 4)
         else
             config.channels;
+
+    gpa.free(self.rice_params[0..buf_count32]);
 
     // 32 bits raw samples buffers
     // [GUARD_FRONT] [[CH]...[CH]] [GUARD]
@@ -361,6 +369,7 @@ fn processChannels(
                     self.config.feature.max_rice_param,
                     self.rice_sum_buf,
                     self.rice_max_buf,
+                    &self.rice_params[0],
                     bit_depth,
                     waste_bits,
                 );
@@ -376,6 +385,7 @@ fn processChannels(
                     self.config.feature.max_rice_param,
                     self.rice_sum_buf,
                     self.rice_max_buf,
+                    &self.rice_params[1],
                     bit_depth,
                     waste_bits,
                 );
@@ -391,6 +401,7 @@ fn processChannels(
                     self.config.feature.max_rice_param,
                     self.rice_sum_buf,
                     self.rice_max_buf,
+                    &self.rice_params[2],
                     bit_depth,
                     waste_bits,
                 );
@@ -420,6 +431,7 @@ fn processChannels(
                             self.config.feature.max_rice_param,
                             self.rice_sum_buf,
                             self.rice_max_buf,
+                            &self.rice_params[3],
                             bit_depth + 1,
                             0,
                         );
@@ -432,6 +444,7 @@ fn processChannels(
                             self.config.feature.max_rice_param,
                             self.rice_sum_buf,
                             self.rice_max_buf,
+                            &self.rice_params[3],
                             bit_depth + 1,
                             waste_bits,
                         );
@@ -467,6 +480,7 @@ fn processChannels(
                     self.config.feature.max_rice_param,
                     self.rice_sum_buf,
                     self.rice_max_buf,
+                    &self.rice_params[ch],
                     bit_depth,
                     waste_bits,
                 );
@@ -485,8 +499,9 @@ fn chooseSubframeEncoding(
     residuals_dst: []align(simd.VEC_ALIGN32) i32,
     rice_order_max: u4,
     rice_param_max: u5,
-    rice_sum_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64,
-    rice_max_buf: *[rice.MAX_ORDER + 1][rice.MAX_PART]u64,
+    rice_sum_buf: *[rice.ORDER_MAX + 1][rice.PART_MAX]u64,
+    rice_max_buf: *[rice.ORDER_MAX + 1][rice.PART_MAX]u64,
+    rice_params: *[rice.ORDER_MAX + 1][rice.PART_MAX]rice.Config.Param,
     bit_depth: u6,
     waste_bits: u6,
 ) @Tuple(&.{ u64, SubframeType.Encoding }) {
@@ -532,6 +547,7 @@ fn chooseSubframeEncoding(
         rice_param_max,
         rice_sum_buf,
         rice_max_buf,
+        rice_params,
         bps,
         best_fixed_order,
     );

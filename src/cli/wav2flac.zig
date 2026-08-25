@@ -1,5 +1,4 @@
 const std = @import("std");
-const option = @import("option");
 
 const flac = @import("flac");
 
@@ -16,7 +15,7 @@ pub fn main(
     const in_file = try std.Io.Dir.cwd().openFile(io, input, .{});
     defer in_file.close(io);
 
-    var in_buf: [option.buffer_size]u8 = undefined;
+    var in_buf: [4096]u8 = undefined;
     var in_reader = in_file.reader(io, &in_buf);
 
     const wav: flac.WavReader = try .init(&in_reader.interface);
@@ -29,7 +28,7 @@ pub fn main(
     const out_file = try std.Io.Dir.cwd().createFile(io, output, .{});
     defer out_file.close(io);
 
-    var out_buf: [option.buffer_size]u8 = undefined;
+    var out_buf: [4096]u8 = undefined;
     var out_writer = out_file.writer(io, &out_buf);
 
     // Flac File Writer
@@ -69,13 +68,15 @@ fn encode(
     wav: WavReader,
     flac_enc: *flac.Encoder,
 ) !void {
-    const sample_buf = try gpa.alloc(u8, option.frame_size * wav.channels * wav.bytes_per_sample);
+    const frame_size = 4096;
+
+    const sample_buf = try gpa.alloc(u8, frame_size * wav.channels * wav.bytes_per_sample);
     defer gpa.free(sample_buf);
 
     var frame_idx: u36 = 0;
     var remain_samples_count: usize = wav.samples_count;
     while (remain_samples_count > 0) : (frame_idx += 1) {
-        const read_count = @min(option.frame_size, remain_samples_count);
+        const read_count = @min(frame_size, remain_samples_count);
         const samples_read = try wav.fillSamples(sample_buf, read_count, flac_enc.samples, &flac_enc.md5);
         if (samples_read == 0) break;
         remain_samples_count -= samples_read;

@@ -561,8 +561,7 @@ fn processParams_vector(
     const VecU8 = @Vector(vlanes, u8);
     const VecU6 = @Vector(vlanes, u6);
 
-    const param0 = rice_params[0];
-    const bits0 = min_bits[0];
+    const part_len0 = part_len - pred_order;
 
     const ones: VecU6 = @splat(1);
     const part_lenV: V = @splat(part_len);
@@ -571,6 +570,10 @@ fn processParams_vector(
     var paramV: V = @splat(0);
     var param_add1V: V = @splat(1);
     var param_sub1V: V = undefined;
+
+    const sums0 = abs_sums[0];
+    var bits0 = min_bits[0];
+    var param0 = rice_params[0];
 
     // Calculate all partitions with same length first
     { // param == 0
@@ -588,6 +591,9 @@ fn processParams_vector(
             rice_paramsV.* = @select(u8, smaller, @as(VecU8, @intCast(paramV)), rice_paramsV.*);
             min_bitsV.* = @select(u64, smaller, bits, min_bitsV.*);
         }
+        const bits_new0 = @as(u64, 1 + 0) * part_len0 +% (sums0 << 1) -% (part_len0 >> 1);
+        if (bits_new0 < bits0) param0 = .{ .p = 0 };
+        if (bits_new0 < bits0) bits0 = bits_new0;
     }
     var param: u5 = 1;
     while (param <= param_max) : (param += 1) {
@@ -609,19 +615,12 @@ fn processParams_vector(
             rice_paramsV.* = @select(u8, smaller, @as(VecU8, @intCast(paramV)), rice_paramsV.*);
             min_bitsV.* = @select(u64, smaller, bits, min_bitsV.*);
         }
+        const bits_new0 = @as(u64, 1 + param) * part_len0 +% (sums0 >> @intCast(param - 1)) -% (part_len0 >> 1);
+        if (bits_new0 < bits0) param0 = .{ .p = param };
+        if (bits_new0 < bits0) bits0 = bits_new0;
     }
-
-    // The real partition0 will be process much later
-    const p = 0;
-    rice_params[p] = param0;
-    min_bits[p] = bits0;
-    const part_len0 = part_len - pred_order;
-    param = 0;
-    while (param <= param_max) : (param += 1) {
-        const bits = calcPartSize(part_len0, param, abs_sums[p]);
-        if (bits < min_bits[p]) rice_params[p] = .{ .p = @intCast(param) };
-        if (bits < min_bits[p]) min_bits[p] = bits;
-    }
+    rice_params[0] = param0;
+    min_bits[0] = bits0;
 }
 
 // libFLAC's algorithm

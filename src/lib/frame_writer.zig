@@ -16,10 +16,10 @@ const W_BYTE: u8 = 8;
 
 writer: *std.Io.Writer,
 
-accu: u64 = undefined,
-buffer: []u64,
-end: usize = 0,
-remain_bits: u8 = W_BIT,
+bits: u64 = undefined,
+bits_left: u8 = W_BIT,
+buf: []u64,
+buf_len: usize = 0,
 
 crc16: Crc16 = .{},
 
@@ -30,110 +30,98 @@ bytes_written: u24 = 0,
 /// `writer`: underlying writer
 /// `buffer`: bits buffer of length between 2 and 2^32
 pub fn init(writer: *std.Io.Writer, buffer: []u64) FrameWriter {
-    return .{ .writer = writer, .buffer = buffer };
+    return .{ .writer = writer, .buf = buffer };
 }
 
 // -- Methods --
 
 /// Write number of bits to the file (big endian) \
-/// Use `writeBitsWrapped()` if writing signed negative integers
-fn writeBits(self: *FrameWriter, bits: u8, value: u64) Writer.Error!void {
-    std.debug.assert(bits <= 64);
-    if (bits == 0) return;
+/// Use `writeBitsSigned()` if writing signed negative integers
+fn writeBits(self: *FrameWriter, n: u8, value: u64) Writer.Error!void {
+    std.debug.assert(n <= 64);
+    std.debug.assert(n == 64 or value < (@as(u64, 1) << @intCast(n)));
 
-    if (bits <= self.remain_bits) {
-        self.accu <<= @intCast(bits);
-        self.accu |= value;
-        self.remain_bits -= bits;
-    } else { // if (self.remain_bits <= size)
+    if (n <= self.bits_left) {
+        @branchHint(.likely);
+        self.bits <<= @intCast(n);
+        self.bits |= value;
+        self.bits_left -= n;
+    } else { // if (n > self.remain_bits)
         // write fitable bits
-        const shift_amount = bits - self.remain_bits;
-        self.accu <<= @intCast(self.remain_bits);
-        self.accu |= value >> @intCast(shift_amount);
-        self.buffer[self.end] = std.mem.nativeToBig(u64, self.accu);
+        const unfit = n - self.bits_left;
+        self.bits <<= @intCast(self.bits_left);
+        self.bits |= value >> @intCast(unfit);
+        self.buf[self.buf_len] = std.mem.nativeToBig(u64, self.bits);
         // write remaining bits anyways
-        self.accu = value;
-        self.remain_bits = W_BIT - shift_amount;
-        self.end += 1;
+        self.bits = value;
+        self.bits_left = W_BIT - unfit;
+        self.buf_len += 1;
     }
 }
 
 /// Should be used instead of `writeBits()` when writing signed negative integers
-inline fn writeBitsSigned(self: *FrameWriter, size: u8, value: u64) Writer.Error!void {
-    const bits = value & (@as(u64, std.math.maxInt(u64)) >> @truncate(64 - size));
-    return self.writeBits(size, bits);
+inline fn writeBitsSigned(self: *FrameWriter, n: u8, svalue: u64) Writer.Error!void {
+    const value = svalue & (@as(u64, std.math.maxInt(u64)) >> @truncate(64 - n));
+    return self.writeBits(n, value);
 }
 
 /// Write `bits` of zeros
-fn writeZeros(self: *FrameWriter, bits: u32) Writer.Error!void {
-    if (bits == 0) return;
+fn writeZeros(self: *FrameWriter, n: u32) Writer.Error!void {
+    std.debug.assert(n > 64);
 
-    var remain = bits;
+    var remain = n;
 
     // fill remain space first
-    if (self.remain_bits != W_BIT) {
-        const first_fill = @min(self.remain_bits, bits);
-        self.accu <<= @intCast(first_fill);
-        self.remain_bits -= first_fill;
+    if (self.bits_left != W_BIT) {
+        const first_fill = @min(self.bits_left, n);
+        self.bits <<= @intCast(first_fill);
+        self.bits_left -= first_fill;
         remain -= first_fill;
 
-        if (self.remain_bits == 0) {
-            self.buffer[self.end] = std.mem.nativeToBig(u64, self.accu);
-            self.remain_bits = W_BIT;
-            self.end += 1;
-        }
-        if (remain == 0) {
-            return;
-        }
+        self.buf[self.buf_len] = std.mem.nativeToBig(u64, self.bits);
+        self.bits_left = W_BIT;
+        self.buf_len += 1;
     }
 
     // fill aligned 64bits zeros
     while (remain >= 64) : (remain -= 64) {
-        self.buffer[self.end] = 0;
-        self.end += 1;
+        self.buf[self.buf_len] = 0;
+        self.buf_len += 1;
     }
 
-    // fill remaining
-    if (remain != 0) {
-        self.accu = 0;
-        self.remain_bits = @intCast(W_BIT - remain);
-    }
-}
-
-/// Flush all written bits aligned to bytes
-pub fn flushAll(self: FrameWriter) Writer.Error!void {
-    try self.flushAllNoBitEndReset();
-    self.remain_bits = W_BYTE;
+    // fill remaining unconditionally
+    self.bits = 0;
+    self.bits_left = @intCast(W_BIT - remain);
 }
 
 /// Flush all written bits aligned to bytes \
 /// Does not reset `self.bit_end`
 fn flushAllNoBitEndReset(self: *FrameWriter) Writer.Error!void {
-    var byte_count = self.end * 8;
+    var byte_count = self.buf_len * 8;
     // Byte align the last qword
-    if (self.end < self.buffer.len and self.remain_bits != W_BIT) {
-        self.buffer[self.end] = std.mem.nativeToBig(u64, self.accu << @intCast(self.remain_bits));
-        byte_count += W_BYTE - @divFloor(self.remain_bits, 8);
+    if (self.buf_len < self.buf.len and self.bits_left != W_BIT) {
+        self.buf[self.buf_len] = std.mem.nativeToBig(u64, self.bits << @intCast(self.bits_left));
+        byte_count += W_BYTE - @divFloor(self.bits_left, 8);
     }
     // Crc16
-    const stream: []u8 = std.mem.sliceAsBytes(self.buffer)[0..byte_count];
+    const stream: []u8 = std.mem.sliceAsBytes(self.buf)[0..byte_count];
     self.crc16.update(stream);
     try self.writer.writeAll(stream);
     // update FrameWriter states
     self.bytes_written += @intCast(byte_count);
-    self.end = 0;
+    self.buf_len = 0;
 }
 
 /// Write Crc8 in frame header
 pub fn writeCrc8(self: *FrameWriter) Writer.Error!void {
-    const accu = std.mem.nativeToBig(u64, self.accu << @truncate(self.remain_bits));
-    var words: [2]u64 = switch (self.end) {
+    const accu = std.mem.nativeToBig(u64, self.bits << @truncate(self.bits_left));
+    var words: [2]u64 = switch (self.buf_len) {
         0 => .{ accu, undefined },
-        1 => .{ self.buffer[0], accu },
+        1 => .{ self.buf[0], accu },
         else => unreachable,
     };
-    const byte_end = W_BYTE - @divFloor(self.remain_bits, 8);
-    const bytes: []u8 = std.mem.asBytes(&words)[0 .. self.end * W_BYTE + byte_end];
+    const byte_end = W_BYTE - @divFloor(self.bits_left, 8);
+    const bytes: []u8 = std.mem.asBytes(&words)[0 .. self.buf_len * W_BYTE + byte_end];
 
     var crc8: std.hash.crc.Crc8Smbus = .init();
     crc8.update(bytes);
@@ -142,7 +130,7 @@ pub fn writeCrc8(self: *FrameWriter) Writer.Error!void {
 
 /// Write Crc16 in frame footer
 pub inline fn writeCrc16(self: *FrameWriter) Writer.Error!void {
-    if (self.end != 0 or self.remain_bits != W_BIT) try self.flushAllNoBitEndReset();
+    if (self.buf_len != 0 or self.bits_left != W_BIT) try self.flushAllNoBitEndReset();
     self.bytes_written += 2;
     try self.writer.writeInt(u16, self.crc16.crc, .big);
 }
@@ -157,7 +145,7 @@ pub fn writeHeader(
     sample_rate: u24, // 0 if `Streaminfo.sample_rate` is consistant across the file
     is_fixed_size: bool,
 ) Writer.Error!void {
-    std.debug.assert(self.remain_bits == W_BIT);
+    std.debug.assert(self.bits_left == W_BIT);
     std.debug.assert(block_size != 0);
     // Frame sync header
     try self.writeBits(16, if (is_fixed_size) 0xFFF8 else 0xFFF9);
@@ -364,7 +352,12 @@ pub fn writeRicePart(self: *FrameWriter, residuals: []const i32, param: u5) Writ
     for (residuals) |res| {
         const rice_code: rice.Code = .make(param, res);
         // Write Quotient
-        try self.writeZeros(rice_code.quo);
+        if (rice_code.quo > 64) {
+            @branchHint(.unlikely);
+            try self.writeZeros(rice_code.quo);
+        } else {
+            try self.writeBits(@intCast(rice_code.quo), 0);
+        }
         // Write Remainder
         try self.writeBits(@as(u8, param) + 1, mask | rice_code.rem);
     }

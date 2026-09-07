@@ -6,19 +6,16 @@ const builtin = @import("builtin");
 
 const Crc = @This();
 
-// -- Members --
-
-crc: u16 = 0,
-
-// -- Methods --
-
-pub fn update(self: *Crc, data: []u8) void {
+pub fn calculate(data: []u8) u16 {
+    // Incompatible target or short data
     if ((comptime !do_simd) or data.len < 64) {
-        var table_crc: std.hash.crc.Crc16Umts = .{ .crc = self.crc };
+        var table_crc: std.hash.crc.Crc16Umts = .init();
         table_crc.update(data);
-        self.crc = table_crc.final();
-        return;
+        return table_crc.final();
     }
+
+    // Otherwise
+    var crc: u16 = 0;
 
     var blocks = data.len / 16;
     var i: usize = 0;
@@ -28,7 +25,7 @@ pub fn update(self: *Crc, data: []u8) void {
 
     // XOR initial CRC into high 16 buts of high 64-bit lane
     // For non-reflected CRC, the CRC value is conceptually at the MSB end
-    const wide_crc: u64 = @as(u64, self.crc) << 48;
+    const wide_crc: u64 = @as(u64, crc) << 48;
     const crc_vec: Vec64 = loadVec64(wide_crc, 0);
     acc ^= @bitCast(crc_vec);
 
@@ -53,8 +50,13 @@ pub fn update(self: *Crc, data: []u8) void {
 
     var table_crc: std.hash.crc.Crc16Umts = .{ .crc = 0 };
     table_crc.update(final_buf[0..16 + remaining]);
-    self.crc = table_crc.final();
+    crc = table_crc.final();
+
+    return crc;
 }
+
+
+// -- helper functions --
 
 fn loadVec64(hi: u64, lo: u64) Vec64 {
     return switch (builtin.cpu.arch.endian()) {

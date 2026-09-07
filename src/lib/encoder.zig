@@ -250,7 +250,7 @@ pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Write
     );
 
     // Write header start
-    try fwriter.writeHeader(
+    fwriter.writeHeader(
         frame_number,
         frame_info.bit_depth,
         switch (subframe_type) {
@@ -265,7 +265,7 @@ pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Write
     // Write independent channels
     if (subframe_type == .indep) { // Indep Channels
         for (0..frame_info.channels) |ch| {
-            try writeChannelSubframe(&fwriter, subframe_type.indep[ch], frame_info.bit_depth);
+            writeChannelSubframe(&fwriter, subframe_type.indep[ch], frame_info.bit_depth);
         }
     } else { // Stereo ever considering decorrelation
         const channels: [2]u2 = switch (subframe_type.stereo_auto.ch_type) {
@@ -283,12 +283,13 @@ pub fn writeFrame(self: @This(), frame_number: u36, frame_info: FrameInfo) Write
                 2 => &subframe_type.stereo_auto.mid,
                 3 => &subframe_type.stereo_auto.side,
             };
-            try writeChannelSubframe(&fwriter, encoding.*, bit_depth);
+            writeChannelSubframe(&fwriter, encoding.*, bit_depth);
         }
     }
+
     // Close subframe
-    try fwriter.writeCrc16();
-    return fwriter.bytes_written;
+    const bytes_written = try fwriter.flush();
+    return bytes_written;
 }
 
 /// Write subframe of a channel (any kind: single, mid, side)
@@ -296,22 +297,22 @@ fn writeChannelSubframe(
     fwriter: *FrameWriter,
     subframe_type: SubframeType.Encoding,
     bit_depth: u6,
-) Writer.Error!void {
+) void {
     switch (subframe_type) {
         .constant => |c| {
             const bps = bit_depth - c.waste_bits;
-            try fwriter.writeConstantSubframe(c.sample, bps, c.waste_bits);
+            fwriter.writeConstantSubframe(c.sample, bps, c.waste_bits);
         },
         .verbatim => |v| {
             const bps = bit_depth - v.waste_bits;
-            try switch (v.samples) {
+            switch (v.samples) {
                 .normal => |samples| fwriter.writeVerbatimSubframe(i32, samples, bps, v.waste_bits),
                 .wide => |samples| fwriter.writeVerbatimSubframe(i64, samples, bps, v.waste_bits),
-            };
+            }
         },
         .fixed => |f| {
             const bps = bit_depth - f.waste_bits;
-            try fwriter.writeFixedSubframe(f.warmup_samples, f.residuals, f.order, f.rice_config, bps, f.waste_bits);
+            fwriter.writeFixedSubframe(f.warmup_samples, f.residuals, f.order, f.rice_config, bps, f.waste_bits);
         },
         // else => unreachable, // TODO
     }

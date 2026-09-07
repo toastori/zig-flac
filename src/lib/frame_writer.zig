@@ -5,6 +5,7 @@ const flac_type = @import("type.zig");
 const metadata = @import("metadata.zig");
 const rice = @import("rice.zig");
 const Channel = flac_type.Channel;
+const Crc8 = std.hash.crc.Crc8Smbus;
 const Crc16 = @import("crc16.zig");
 const Writer = std.Io.Writer;
 const FrameWriter = @This();
@@ -15,29 +16,58 @@ const W_BYTE: u8 = 8;
 // -- Members --
 
 writer: *std.Io.Writer,
+state: State = .uninit,
 
 bits: u64 = undefined,
 bits_left: u8 = W_BIT,
 buf: []u64,
-buf_len: usize = 0,
+buf_len: u24 = 0,
 
-crc16: Crc16 = .{},
+// -- Types --
 
-bytes_written: u24 = 0,
+const State = struct {
+    s: switch (builtin.mode) {
+        .ReleaseSmall, .ReleaseFast => void,
+        .Debug, .ReleaseSafe => DebugState,
+    },
+
+    pub const DebugState = enum { uninit, init, headered, flushed };
+
+    const uninit: State = .{ .s = switch (builtin.mode) {
+        .ReleaseSmall, .ReleaseFast => {},
+        .Debug, .ReleaseSafe => .uninit,
+    }};
+    const init: State = .{ .s = switch (builtin.mode) {
+        .ReleaseSmall, .ReleaseFast => {},
+        .Debug, .ReleaseSafe => .init,
+    }};
+    const headered: State = .{ .s = switch (builtin.mode) {
+        .ReleaseSmall, .ReleaseFast => {},
+        .Debug, .ReleaseSafe => .headered,
+    }};
+    const flushed: State = .{ .s = switch (builtin.mode) {
+        .ReleaseSmall, .ReleaseFast => {},
+        .Debug, .ReleaseSafe => .flushed,
+    }};
+
+    pub inline fn expect(self: State, state: DebugState) void {
+        if (@TypeOf(self.s) == DebugState) std.debug.assert(self.s == state);
+    }
+};
 
 // -- Initializer --
 
 /// `writer`: underlying writer
 /// `buffer`: bits buffer of length between 2 and 2^32
 pub fn init(writer: *std.Io.Writer, buffer: []u64) FrameWriter {
-    return .{ .writer = writer, .buf = buffer };
+    return .{ .writer = writer, .buf = buffer, .state = .init };
 }
 
 // -- Methods --
 
 /// Write number of bits to the file (big endian) \
 /// Use `writeBitsSigned()` if writing signed negative integers
-fn writeBits(self: *FrameWriter, n: u8, value: u64) Writer.Error!void {
+fn writeBits(self: *FrameWriter, n: u8, value: u64) void {
     std.debug.assert(n <= 64);
     std.debug.assert(n == 64 or value < (@as(u64, 1) << @intCast(n)));
 
@@ -46,13 +76,13 @@ fn writeBits(self: *FrameWriter, n: u8, value: u64) Writer.Error!void {
         self.bits <<= @intCast(n);
         self.bits |= value;
         self.bits_left -= n;
-    } else { // if (n > self.remain_bits)
+    } else { // if (n > self.bits_left)
         // write fitable bits
         const unfit = n - self.bits_left;
         self.bits <<= @intCast(self.bits_left);
         self.bits |= value >> @intCast(unfit);
         self.buf[self.buf_len] = std.mem.nativeToBig(u64, self.bits);
-        // write remaining bits anyways
+        // write remaining bits
         self.bits = value;
         self.bits_left = W_BIT - unfit;
         self.buf_len += 1;
@@ -60,13 +90,14 @@ fn writeBits(self: *FrameWriter, n: u8, value: u64) Writer.Error!void {
 }
 
 /// Should be used instead of `writeBits()` when writing signed negative integers
-inline fn writeBitsSigned(self: *FrameWriter, n: u8, svalue: u64) Writer.Error!void {
+inline fn writeBitsSigned(self: *FrameWriter, n: u8, svalue: u64) void {
     const value = svalue & (@as(u64, std.math.maxInt(u64)) >> @truncate(64 - n));
     return self.writeBits(n, value);
 }
 
 /// Write `bits` of zeros
-fn writeZeros(self: *FrameWriter, n: u32) Writer.Error!void {
+fn writeZeros(self: *FrameWriter, n: u32) void {
+    self.state.expect(.headered);
     std.debug.assert(n > 64);
 
     var remain = n;
@@ -94,45 +125,28 @@ fn writeZeros(self: *FrameWriter, n: u32) Writer.Error!void {
     self.bits_left = @intCast(W_BIT - remain);
 }
 
-/// Flush all written bits aligned to bytes \
-/// Does not reset `self.bit_end`
-fn flushAllNoBitEndReset(self: *FrameWriter) Writer.Error!void {
+/// Write frame and crc16 to file \
+///
+/// return `bytes_written`
+pub inline fn flush(self: *FrameWriter) Writer.Error!u24 {
+    self.state.expect(.headered);
+
+    const buf_bytes: []u8 = std.mem.sliceAsBytes(self.buf);
     var byte_count = self.buf_len * 8;
     // Byte align the last qword
-    if (self.buf_len < self.buf.len and self.bits_left != W_BIT) {
+    if (self.bits_left != W_BIT) {
         self.buf[self.buf_len] = std.mem.nativeToBig(u64, self.bits << @intCast(self.bits_left));
         byte_count += W_BYTE - @divFloor(self.bits_left, 8);
     }
-    // Crc16
-    const stream: []u8 = std.mem.sliceAsBytes(self.buf)[0..byte_count];
-    self.crc16.update(stream);
-    try self.writer.writeAll(stream);
-    // update FrameWriter states
-    self.bytes_written += @intCast(byte_count);
-    self.buf_len = 0;
-}
+    { // Crc16
+        const crc16 = Crc16.calculate(buf_bytes[0..byte_count]);
+        std.mem.writeInt(u16, buf_bytes[byte_count..][0..2], crc16, .big);
+        byte_count += 2;
+    }
+    // Write the whole frame
+    try self.writer.writeAll(buf_bytes[0..byte_count]);
 
-/// Write Crc8 in frame header
-pub fn writeCrc8(self: *FrameWriter) Writer.Error!void {
-    const accu = std.mem.nativeToBig(u64, self.bits << @truncate(self.bits_left));
-    var words: [2]u64 = switch (self.buf_len) {
-        0 => .{ accu, undefined },
-        1 => .{ self.buf[0], accu },
-        else => unreachable,
-    };
-    const byte_end = W_BYTE - @divFloor(self.bits_left, 8);
-    const bytes: []u8 = std.mem.asBytes(&words)[0 .. self.buf_len * W_BYTE + byte_end];
-
-    var crc8: std.hash.crc.Crc8Smbus = .init();
-    crc8.update(bytes);
-    try self.writeBits(8, crc8.final());
-}
-
-/// Write Crc16 in frame footer
-pub inline fn writeCrc16(self: *FrameWriter) Writer.Error!void {
-    if (self.buf_len != 0 or self.bits_left != W_BIT) try self.flushAllNoBitEndReset();
-    self.bytes_written += 2;
-    try self.writer.writeInt(u16, self.crc16.crc, .big);
+    return byte_count;
 }
 
 /// Write frame header
@@ -144,11 +158,10 @@ pub fn writeHeader(
     block_size: u16,
     sample_rate: u24, // 0 if `Streaminfo.sample_rate` is consistant across the file
     is_fixed_size: bool,
-) Writer.Error!void {
-    std.debug.assert(self.bits_left == W_BIT);
-    std.debug.assert(block_size != 0);
+) void {
+    self.state.expect(.init);
     // Frame sync header
-    try self.writeBits(16, if (is_fixed_size) 0xFFF8 else 0xFFF9);
+    self.writeBits(16, if (is_fixed_size) 0xFFF8 else 0xFFF9);
     // Write block size
     var uncommon_block_size: enum(u6) { none, byte = 8, half = 16 } = .none;
 
@@ -156,24 +169,24 @@ pub fn writeHeader(
         const ctz = @ctz(block_size);
         break :blk std.math.isPowerOfTwo(block_size) and ctz <= 15 and ctz >= 8;
     }) {
-        try self.writeBits(4, @ctz(block_size));
+        self.writeBits(4, @ctz(block_size));
     } else if (block_size == 192) { // 192
-        try self.writeBits(4, 1);
+        self.writeBits(4, 1);
     } else if (blk: { // 144 * 2^v
         const ctz: u4 = @intCast(@ctz(block_size));
         break :blk (block_size >> ctz == 144) and ctz <= 5 and ctz >= 2;
     }) {
-        try self.writeBits(4, @ctz(block_size));
+        self.writeBits(4, @ctz(block_size));
     } else if (block_size < 0x100) { // 8bits uncommon block size
-        try self.writeBits(4, 0b0110);
+        self.writeBits(4, 0b0110);
         uncommon_block_size = .byte;
     } else { // 16bits uncommon block size
-        try self.writeBits(4, 0b0111);
+        self.writeBits(4, 0b0111);
         uncommon_block_size = .half;
     }
     // Write sample rate
     var uncommon_sample_rate: enum(u8) { none, byte = 4, half = 1, half_tenth = 10 } = .none;
-    try self.writeBits(
+    self.writeBits(
         4,
         switch (sample_rate) {
             0 => 0,
@@ -204,9 +217,9 @@ pub fn writeHeader(
         },
     );
     // Write channels
-    try self.writeBits(4, channels.get_int());
+    self.writeBits(4, channels.get_int());
     // Write bit depth
-    try self.writeBits(
+    self.writeBits(
         4,
         switch (bit_depth) {
             0 => 0,
@@ -221,7 +234,7 @@ pub fn writeHeader(
     );
     // Write frame/sample number
     if (frame_number <= 0x7F) {
-        try self.writeBits(8, @intCast(frame_number));
+        self.writeBits(8, @intCast(frame_number));
     } else {
         std.debug.assert(frame_number <= 0x000f_ffff_ffff);
         var buffer: u56 = 0;
@@ -235,35 +248,49 @@ pub fn writeHeader(
             first_byte_max >>= 1;
         }
         buffer |= ((@as(u56, 0b11111110) << (6 - i)) | number) << (8 * i); // first byte
-        try self.writeBitsSigned(8 * (i + 1), buffer);
+        self.writeBitsSigned(8 * (i + 1), buffer);
     }
     // Write uncommon block size
     switch (uncommon_block_size) {
         .none => {},
-        else => try self.writeBits(@intFromEnum(uncommon_block_size), block_size - 1),
+        else => self.writeBits(@intFromEnum(uncommon_block_size), block_size - 1),
     }
     // Write uncommon sample rate
     switch (uncommon_sample_rate) {
         .none => {},
-        .byte => try self.writeBits(8, @intCast(block_size)),
-        else => try self.writeBits(16, @intCast(block_size / @intFromEnum(uncommon_sample_rate))),
+        .byte => self.writeBits(8, @intCast(sample_rate)),
+        else => self.writeBits(16, @intCast(sample_rate / @intFromEnum(uncommon_sample_rate))),
     }
     // Write Crc8
-    try self.writeCrc8();
+    self.writeCrc8();
+
+    self.state = .headered;
+}
+
+/// Write Crc8 in frame header
+fn writeCrc8(self: *FrameWriter) void {
+    const accu = std.mem.nativeToBig(u64, self.bits << @truncate(self.bits_left));
+    var words: [2]u64 = switch (self.buf_len) {
+        0 => .{ accu, undefined },
+        1 => .{ self.buf[0], accu },
+        else => unreachable,
+    };
+    const byte_end = W_BYTE - @divFloor(self.bits_left, 8);
+    const bytes: []u8 = std.mem.asBytes(&words)[0 .. self.buf_len * W_BYTE + byte_end];
+
+    var crc8: std.hash.crc.Crc8Smbus = .init();
+    crc8.update(bytes);
+    self.writeBits(8, crc8.final());
 }
 
 /// Write subframe in Constant encoding \
 /// Wasted Bits in Constant Subframe makes no sense at all (?
-pub fn writeConstantSubframe(
-    self: *FrameWriter,
-    sample: i64,
-    bps: u6,
-    waste_bits: u6,
-) Writer.Error!void {
+pub fn writeConstantSubframe(self: *FrameWriter, sample: i64, bps: u6, waste_bits: u6,) void {
+    self.state.expect(.headered);
     // subframe Header: syncBit[0](1) + Constant Coding[000000](6) + WastedBits[0](1)
-    try self.writeBits(8, 0);
-    // Waste bits unary code takes the same digits as waste bits itself, doesn't worth one more call
-    try self.writeBitsSigned(bps + waste_bits, @bitCast(sample << waste_bits));
+    self.writeBits(8, 0);
+    // Waste bits unary code takes the same digits as waste bits itself, doesn't worth extra write
+    self.writeBitsSigned(bps + waste_bits, @bitCast(sample << waste_bits));
 }
 
 /// Write subframe in Verbatim encoding
@@ -273,18 +300,19 @@ pub fn writeVerbatimSubframe(
     samples: []const T,
     bps: u6,
     waste_bits: u6,
-) Writer.Error!void {
+) void {
+    self.state.expect(.headered);
     if (T != i32 and T != i64) @compileError("expect T as i32 or i64, found " ++ @typeName(T));
     // Subframe Header: SyncBit[0](1) + Verbatim Coding[000001](6) + WastedBits[F](1)
     if (waste_bits == 0) {
-        try self.writeBits(8, 0b10);
+        self.writeBits(8, 0b10);
     } else {
-        try self.writeBits(8, 0b11);
-        try self.writeBits(waste_bits, 1);
+        self.writeBits(8, 0b11);
+        self.writeBits(waste_bits, 1);
     }
 
     for (samples) |sample| {
-        try self.writeBitsSigned(bps, @bitCast(@as(i64, @intCast(sample))));
+        self.writeBitsSigned(bps, @bitCast(@as(i64, @intCast(sample))));
     }
 }
 
@@ -296,23 +324,25 @@ pub fn writeFixedSubframe(
     rice_config: rice.Config,
     bps: u6,
     waste_bits: u6,
-) Writer.Error!void {
+) void {
+    self.state.expect(.headered);
+
     const param_len = rice_config.method.headerBits();
 
     // Subframe Header: SyncBit[0](1) + Fixed Coding[001NNN](6) + WastedBits[F](1)
     if (waste_bits == 0) {
-        try self.writeBits(8, (8 | order) << 1);
+        self.writeBits(8, (8 | order) << 1);
     } else {
-        try self.writeBits(8, ((8 | order) << 1) | 1);
-        try self.writeBits(waste_bits, 1);
+        self.writeBits(8, ((8 | order) << 1) | 1);
+        self.writeBits(waste_bits, 1);
     }
     // Write unencoded warm-up samples
     for (0..order) |i| {
-        try self.writeBitsSigned(bps, @bitCast(warmup_samples[i]));
+        self.writeBitsSigned(bps, @bitCast(warmup_samples[i]));
     }
 
     // Rice code with N bits param(2) + Partition order(4)
-    try self.writeBits(2 + 4, (@intFromEnum(rice_config.method) << 4) | rice_config.part_order);
+    self.writeBits(2 + 4, (@intFromEnum(rice_config.method) << 4) | rice_config.part_order);
 
     // Write Rice codes
     var remain_residuals = residuals[order..];
@@ -328,37 +358,39 @@ pub fn writeFixedSubframe(
         if (param.isEscape()) { // Escaped
             @branchHint(.unlikely);
             // Write rice param
-            try self.writeBits(param_len, 0b1111 | (@intFromEnum(rice_config.method) << 4));
+            self.writeBits(param_len, 0b1111 | (@intFromEnum(rice_config.method) << 4));
             // Write bits per sample (of escape partition)
-            try self.writeBits(5, param.escapeBits());
+            self.writeBits(5, param.escapeBits());
             // Write nothing if bits per sample is 0
             if (param.escapeBits() == 0) continue;
             // Write escaped samples
             for (part_residuals) |r| {
-                try self.writeBitsSigned(@intCast(param.escapeBits()), @as(u32, @bitCast(r)));
+                self.writeBitsSigned(@intCast(param.escapeBits()), @as(u32, @bitCast(r)));
             }
             continue;
         }
         // Rice Coded
         // Write rice param
-        try self.writeBits(param_len, param.p);
+        self.writeBits(param_len, param.p);
         // Write rice coded residuals
-        try self.writeRicePart(part_residuals, @intCast(param.p));
+        self.writeRicePart(part_residuals, @intCast(param.p));
     }
 }
 
-pub fn writeRicePart(self: *FrameWriter, residuals: []const i32, param: u5) Writer.Error!void {
+fn writeRicePart(self: *FrameWriter, residuals: []const i32, param: u5) void {
+    self.state.expect(.headered);
+
     const mask = @as(u64, 1) << param;
     for (residuals) |res| {
         const rice_code: rice.Code = .make(param, res);
         // Write Quotient
         if (rice_code.quo > 64) {
             @branchHint(.unlikely);
-            try self.writeZeros(rice_code.quo);
+            self.writeZeros(rice_code.quo);
         } else {
-            try self.writeBits(@intCast(rice_code.quo), 0);
+            self.writeBits(@intCast(rice_code.quo), 0);
         }
         // Write Remainder
-        try self.writeBits(@as(u8, param) + 1, mask | rice_code.rem);
+        self.writeBits(@as(u8, param) + 1, mask | rice_code.rem);
     }
 }

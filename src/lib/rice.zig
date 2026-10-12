@@ -135,7 +135,7 @@ fn calcParamExact(
     std.debug.assert(max_param == PARAM4_MAX or max_param == PARAM5_MAX);
 
     const steps: usize = if (max_param == PARAM4_MAX)
-        std.math.divCeil(simd.CHUNK32, 2)
+        @divCeil(simd.CHUNK32, 2)
     else
         simd.CHUNK32;
 

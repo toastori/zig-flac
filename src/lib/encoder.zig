@@ -53,12 +53,12 @@ pub fn init(
 
     var result: Encoder = .{ .writer = writer, .config = config, .md5 = .init(.{}) };
     // frame writer buffer (allocate large enough so no checks during encoding)
-    const fwriter_buf = try gpa.alloc(u64, std.math.divCeil(usize, maxFrameBytes(
+    const fwriter_buf = try gpa.alloc(u64, @divCeil(maxFrameBytes(
         config.block_size,
         config.bit_depth,
         config.channels,
         config.feature.compute_waste_bits,
-    ), 8) catch unreachable);
+    ), 8));
     errdefer gpa.free(fwriter_buf);
     result.fwriter_buf = fwriter_buf;
 
@@ -70,11 +70,8 @@ pub fn init(
 
 
     // increase block_size to the multiple of vector length
-    // TODO 0.17.x replace with @divCeil(config.blovk_size_max, simd.VEC_ALIGN) * simd.VEC_ALIGN;
-    const block_len32 =
-        @divFloor(config.block_size + simd.LEN32 - 1, simd.LEN32) * simd.LEN32;
-    const block_len64 =
-        @divFloor(config.block_size + simd.LEN64 - 1, simd.LEN64) * simd.LEN64;
+    const block_len32 = @divCeil(config.block_size, simd.LEN32) * simd.LEN32;
+    const block_len64 = @divCeil(config.block_size, simd.LEN64) * simd.LEN64;
     const buf_count32 =
         if (config.feature.stereo_decorrelation == true and config.channels == 2)
             @max(config.channels, 4)
@@ -132,11 +129,8 @@ pub fn deinit(self: @This(), gpa: Allocator) void {
     gpa.destroy(self.rice_max_buf);
 
     // increase block_size to the multiple of vector alignment
-    // TODO 0.17.x replace with @divCeil(config.blovk_size_max, simd.VEC_ALIGN) * simd.VEC_ALIGN;
-    const block_len32 =
-        @divFloor(config.block_size + simd.LEN32 - 1, simd.LEN32) * simd.LEN32;
-    const block_len64 =
-        @divFloor(config.block_size + simd.LEN64 - 1, simd.LEN64) * simd.LEN64;
+    const block_len32 = @divCeil(config.block_size, simd.LEN32) * simd.LEN32;
+    const block_len64 = @divCeil(config.block_size, simd.LEN64) * simd.LEN64;
     const buf_count32 =
         if (config.feature.stereo_decorrelation == true and config.channels == 2)
             @max(config.channels, 4)
@@ -148,14 +142,14 @@ pub fn deinit(self: @This(), gpa: Allocator) void {
     // 32 bits raw samples buffers
     // [GUARD_FRONT] [[CH]...[CH]] [GUARD]
     const sample_buf_len = guard_len_front32 + block_len32 * buf_count32 + guard_len32;
-    const sample_buf_start: [*]i32 =
+    const sample_buf_start: [*]align(simd.VEC_ALIGN32) i32 =
         @ptrFromInt(@intFromPtr(self.samples[0]) - (guard_len_front32 * @sizeOf(i32)));
     gpa.free(sample_buf_start[0..sample_buf_len]);
 
     // 32 bits residuals buffers
     // [GUARD_FRONT] [[CH][GUARD]..[CH][GUARD]]
     const res_buf_len = guard_len_front32 + (block_len32 + guard_len32) * buf_count32;
-    const res_buf_start: [*]i32 =
+    const res_buf_start: [*]align(simd.VEC_ALIGN32) i32 =
         @ptrFromInt(@intFromPtr(self.residuals[0]) - (guard_len_front32 * @sizeOf(i32)));
     gpa.free(res_buf_start[0..res_buf_len]);
 
@@ -164,7 +158,7 @@ pub fn deinit(self: @This(), gpa: Allocator) void {
         if (config.feature.stereo_decorrelation == true and config.channels != 1) {
             // [GUARD_FRONT] [CH] [GUARD]
             const wsample_buf_len = guard_len_front64 + block_len64 + guard_len64;
-            const wsample_buf_start: [*]i64 =
+            const wsample_buf_start: [*]align(simd.VEC_ALIGN64) i64 =
                 @ptrFromInt(@intFromPtr(self.samples64) - (guard_len_front64 * @sizeOf(i64)));
             gpa.free(wsample_buf_start[0..wsample_buf_len]);
         }
@@ -604,7 +598,7 @@ fn maxFrameBytes(block_size: u16, bit_depth: u6, channels: u4, stereo_decorrelat
     const subframe_header_max: usize = 8;
     // data (estimate verbatim as max, plus 1 more channel as free space)
     const bps: usize = if (channels == 2 and stereo_decorrelation) bit_depth + 1 else bit_depth;
-    const byte_per_sample: usize = std.math.divCeil(usize, bps, 8) catch unreachable;
+    const byte_per_sample: usize = @divCeil(bps, 8);
     const data_estimate = @as(usize, block_size) * byte_per_sample * (channels + 1);
     // footer (crc16)
     const footer = 2;

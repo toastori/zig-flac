@@ -5,11 +5,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const Crc = @This();
+const ZigCrc = std.hash.crc.@"CRC-16/UMTS";
 
 pub fn calculate(data: []u8) u16 {
     // Incompatible target or short data
     if ((comptime !do_simd) or data.len < 64) {
-        var table_crc: std.hash.crc.Crc16Umts = .init();
+        var table_crc: ZigCrc = .init();
         table_crc.update(data);
         return table_crc.final();
     }
@@ -48,7 +49,7 @@ pub fn calculate(data: []u8) u16 {
     const remaining = data.len - i;
     if (remaining != 0) @memcpy(final_buf[16..][0..remaining], data[i..][0..remaining]);
 
-    var table_crc: std.hash.crc.Crc16Umts = .{ .crc = 0 };
+    var table_crc: ZigCrc = .{ .crc = 0 };
     table_crc.update(final_buf[0..16 + remaining]);
     crc = table_crc.final();
 
@@ -103,7 +104,7 @@ const do_simd =
     (
         builtin.target.cpu.has(.x86, std.Target.x86.Feature.pclmul) or
         builtin.target.cpu.has(.aarch64, std.Target.aarch64.Feature.v8a)
-    ) and builtin.mode != .Debug;
+    ) and builtin.mode != .debug;
 const Vec = @Vector(16, u8);
 const Vec64 = @Vector(2, u64);
 

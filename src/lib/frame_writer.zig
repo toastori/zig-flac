@@ -278,7 +278,7 @@ fn writeCrc8(self: *FrameWriter) void {
     const byte_end = W_BYTE - @divFloor(self.bits_left, 8);
     const bytes: []u8 = std.mem.asBytes(&words)[0 .. self.buf_len * W_BYTE + byte_end];
 
-    var crc8: std.hash.crc.Crc8Smbus = .init();
+    var crc8: std.hash.crc.@"CRC-8/SMBUS" = .init();
     crc8.update(bytes);
     self.writeBits(8, crc8.final());
 }

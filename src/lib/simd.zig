@@ -26,7 +26,7 @@ pub const VecU64 = @Vector(LEN64, u64);
 pub const rice = struct {
     pub const do_simd = Root.do_simd;
     pub const LEN64R = @min(32, LEN64);
-    pub const CHUNK32 = std.math.divCeil(comptime_int, 32, LEN64R) catch unreachable;
+    pub const CHUNK32 = @divCeil(32, LEN64R);
 
     pub const VecI32s = @Vector(LEN64R, i32);
     pub const VecU32s = @Vector(LEN64R, u32);

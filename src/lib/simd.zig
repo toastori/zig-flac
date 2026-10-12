@@ -1,6 +1,5 @@
 const std = @import("std");
 const option = @import("option");
-const Root = @This();
 
 pub const do_simd = std.simd.suggestVectorLength(i64) != null and option.do_simd;
 
@@ -22,33 +21,6 @@ pub const VecI32s = @Vector(LEN64, i32);
 pub const VecU32s = @Vector(LEN64, u32);
 pub const VecI64 = @Vector(LEN64, i64);
 pub const VecU64 = @Vector(LEN64, u64);
-
-pub const rice = struct {
-    pub const do_simd = Root.do_simd;
-    pub const LEN64R = @min(32, LEN64);
-    pub const CHUNK32 = @divCeil(32, LEN64R);
-
-    pub const VecI32s = @Vector(LEN64R, i32);
-    pub const VecU32s = @Vector(LEN64R, u32);
-    pub const VecI64 = @Vector(LEN64R, i64);
-    pub const VecU64 = @Vector(LEN64R, u64);
-
-    pub const ONES: rice.VecU64 = @splat(std.math.maxInt(u64));
-    pub const PARAMS: [rice.CHUNK32]rice.VecU64 = blk: {
-        var iotas: [rice.CHUNK32]rice.VecU64 = @splat(std.simd.iota(u64, rice.LEN64R));
-        for (&iotas, 0..) |*iota, i| {
-            iota.* += @splat(rice.LEN64R * i);
-        }
-        break :blk iotas;
-    };
-    pub const PARAM_P1: [rice.CHUNK32]rice.VecU64 = blk: {
-        var iotas: [rice.CHUNK32]rice.VecU64 = @splat(std.simd.iota(u64, rice.LEN64R));
-        for (&iotas, 0..) |*iota, i| {
-            iota.* += @splat(rice.LEN64R * i + 1);
-        }
-        break :blk iotas;
-    };
-};
 
 pub fn VEC_ALIGN_OF(T: type) comptime_int {
     return switch (@typeInfo(T)) {

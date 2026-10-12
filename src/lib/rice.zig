@@ -1,7 +1,6 @@
 const std = @import("std");
 
-const simd = @import("simd.zig").rice;
-const VecU64 = simd.VecU64;
+const simd = @import("simd.zig");
 
 // -- CONSTANTS --
 
@@ -121,146 +120,6 @@ pub fn calcParams(
         param_max,
         pred_order,
     );
-}
-
-// -- Exact --
-
-/// return `.{ bit_count, RiceConfig }`
-fn calcParamExact(
-    residuals: []const i32,
-    max_part_order: u4,
-    max_param: u5,
-    pred_order: u8,
-) @Tuple(&.{ u64, Config }) {
-    std.debug.assert(max_param == PARAM4_MAX or max_param == PARAM5_MAX);
-
-    const steps: usize = if (max_param == PARAM4_MAX)
-        @divCeil(simd.CHUNK32, 2)
-    else
-        simd.CHUNK32;
-
-    var bit_counts: [PART_MAX][simd.CHUNK32]VecU64 = undefined;
-    var min_bit_count: u64 = 0;
-    var best_rice_config: Config = .{ .part_order = max_part_order };
-
-    { // Sum residual rice code length into their smallest partition
-        const part_counts = @as(usize, 1) << max_part_order;
-        const part_size = residuals.len >> max_part_order;
-        { // First partition
-            const result = sumFirstPartBitCounts(residuals[pred_order..part_size], steps);
-            bit_counts[0] = result.bit_counts;
-            min_bit_count = result.bit_count;
-            best_rice_config.params[0] = result.param;
-        }
-        // Remaining partitions
-        var residuals_inc: []const i32 = residuals[part_size..];
-        for (1..part_counts) |part_i| {
-            const result = sumFirstPartBitCounts(residuals_inc[0..part_size], steps);
-            bit_counts[part_i] = result.bit_counts;
-            min_bit_count +|= result.bit_count;
-            best_rice_config.params[part_i] = result.param;
-            residuals_inc = residuals_inc[part_size..];
-        }
-        // Decide to extend rice method
-        if (max_param > PARAM4_MAX) {
-            for (best_rice_config.params[0..part_counts]) |param| {
-                if (param > PARAM4_MAX) best_rice_config.method = .FIVE;
-            }
-        }
-        min_bit_count += (@as(u64, @intFromEnum(best_rice_config.method)) + 4) * part_counts;
-    }
-
-    // Test other partition orders
-    var part_order = max_part_order -% 1;
-    while (max_part_order != 0) : (part_order -= 1) {
-        const order_result = calcOtherPartBitCount(&bit_counts, part_order, max_param, steps);
-
-        // Update best setting if bit_count is smaller
-        if (order_result.bit_count < min_bit_count) {
-            min_bit_count = order_result.bit_count;
-            best_rice_config = order_result.rice_config;
-        }
-
-        if (part_order == 0) break;
-    }
-
-    return .{ min_bit_count, best_rice_config };
-}
-
-/// Sum up bit_counts of a partition for each param
-fn sumFirstPartBitCounts(
-    residuals: []const i32,
-    steps: usize,
-) struct { bit_counts: [simd.CHUNK32]VecU64, bit_count: u64, param: u5 } {
-    // Sum bit_counts up
-    var bit_counts: [simd.CHUNK32]VecU64 = @splat(@splat(0));
-    for (residuals) |res| {
-        const zigzags: VecU64 = @splat(calcZigzag(res));
-        for (0..steps) |step| {
-            bit_counts[step] +|= (zigzags >> @intCast(simd.PARAMS[step])) + simd.PARAM_P1[step];
-        }
-    }
-
-    // Find min bit_counts and param
-    var min_bc = bit_counts[0];
-    var min_param = simd.PARAMS[0];
-    for (1..steps) |step| {
-        const smaller = bit_counts[step] < min_bc;
-        min_param = @select(u64, smaller, simd.PARAMS[step], min_param);
-        min_bc = @min(bit_counts[step], min_bc);
-    }
-
-    const optimal_bit_count: u64 = @reduce(.Min, min_bc);
-    const eq_opt_bc = min_bc == @as(VecU64, @splat(optimal_bit_count));
-    const optimal_param: u64 = @reduce(.Min, @select(u64, eq_opt_bc, min_param, simd.ONES));
-
-    return .{ .bit_counts = bit_counts, .bit_count = optimal_bit_count, .param = @intCast(optimal_param) };
-}
-
-fn calcOtherPartBitCount(
-    bit_counts: *[PART_MAX][simd.CHUNK32]VecU64,
-    part_order: u4,
-    max_param: u5,
-    steps: usize,
-) struct { bit_count: u64, rice_config: Config } {
-    var rice_config: Config = .{ .part_order = part_order };
-    var bit_count: u64 = 0;
-
-    const part_counts = @as(usize, 1) << part_order;
-    // Sum 2 parts into 1
-    for (0..part_counts) |p| {
-        for (0..steps) |step| {
-            bit_counts[p][step] = bit_counts[p * 2][step] +| bit_counts[p * 2 + 1][step];
-        }
-    }
-
-    // Find optimal bit_count and param for each partition
-    for (0..part_counts) |p| {
-        var min_bc: VecU64 = bit_counts[p][0];
-        var min_param: VecU64 = simd.PARAMS[0];
-        for (1..steps) |step| {
-            const smaller = bit_counts[p][step] < min_bc;
-            min_param = @select(u64, smaller, simd.PARAMS[step], min_param);
-            min_bc = @min(bit_counts[p][step], min_bc);
-        }
-        const optimal_bit_count: u64 = @reduce(.Min, min_bc);
-        const eq_opt_bc = min_bc == @as(VecU64, @splat(optimal_bit_count));
-        const optimal_param: u64 = @reduce(.Min, @select(u64, eq_opt_bc, min_param, simd.ONES));
-
-        bit_count +|= optimal_bit_count;
-        rice_config.params[p] = @intCast(optimal_param);
-    }
-
-    // Decide to extend rice method
-    if (max_param > PARAM4_MAX) {
-        for (rice_config.params[0..part_counts]) |param| {
-            if (param > PARAM4_MAX) rice_config.method = .FIVE;
-        }
-    }
-    bit_count +|= (@as(u64, @intFromEnum(rice_config.method)) + 4) * part_counts;
-
-    // Update best setting if bit_count is smaller
-    return .{ .bit_count = bit_count, .rice_config = rice_config };
 }
 
 // -- Estimate functions --
@@ -492,7 +351,7 @@ fn processEscape_vector(
     part_len: u16,
     pred_order: u8,
 ) void {
-    const vlanes = @min(simd.LEN64R, PART_MAX);
+    const vlanes = @min(simd.LEN64, PART_MAX);
     const V = @Vector(vlanes, u64);
     const VecU8 = @Vector(vlanes, u8);
 
@@ -556,7 +415,7 @@ fn processParams_vector(
     part_len: u16,
     pred_order: u8,
 ) void {
-    const vlanes = @min(simd.LEN64R, PART_MAX);
+    const vlanes = @min(simd.LEN64, PART_MAX);
     const V = @Vector(vlanes, u64);
     const VecU8 = @Vector(vlanes, u8);
     const VecU6 = @Vector(vlanes, u6);

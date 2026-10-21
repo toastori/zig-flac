@@ -28,6 +28,12 @@ pub const Md5 = if (link_ossl) extern struct {
     pub fn final(self: *Md5, dest: *[digest_length]u8) void {
         _ = MD5_Final(dest, self);
     }
+
+    pub fn finalResult(self: *Md5) [digest_length]u8 {
+        var result: [digest_length]u8 = undefined;
+        self.final(&result);
+        return result;
+    }
 } else @import("std").crypto.hash.Md5;
 
 pub extern "crypto" fn MD5_Init(c: *Md5) c_int;

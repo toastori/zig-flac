@@ -1,98 +1,184 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const File = Io.File;
+const Io = std.Io;
+const Reader = Io.Reader;
+const Writer = Io.Writer;
 
 const flac = @import("flac");
 
-const Md5 = flac.Md5;
-const WavReader = flac.WavReader;
+const READ_SAMPLES = 4096;
 
 /// Main function for WAV to FLAC
 pub fn main(
-    gpa: std.mem.Allocator,
+    gpa: Allocator,
     io: std.Io,
-    input: []const u8,
-    output: []const u8,
-) !void {
-    const in_file = try std.Io.Dir.cwd().openFile(io, input, .{});
-    defer in_file.close(io);
+    ifile_name: []const u8,
+    ofile_name: []const u8,
+) (Allocator.Error || File.OpenError || Reader.Error || Writer.Error || CodecError)!void {
+    var reader_buf: [4096]u8 = undefined;
+    var writer_buf: [4096]u8 = undefined;
 
-    var in_buf: [4096]u8 = undefined;
-    var in_reader = in_file.reader(io, &in_buf);
+    const ifile = try std.Io.Dir.cwd().openFile(io, ifile_name, .{});
+    defer ifile.close(io);
+    var ireader = ifile.reader(io, &reader_buf);
+    const reader = &ireader.interface;
 
-    const wav: flac.WavReader = try .init(&in_reader.interface);
+    const format: WavFmt = try getWavFmt(reader);
+    flac.Encoder.isFormatSupported(format.bit_depth, format.channels, format.sample_rate) catch
+        return CodecError.UnsupportFormat;
 
-    var streaminfo = wav.flacStreaminfo() orelse {
-        std.log.err("format: flac does not support this wav format", .{});
-        std.process.exit(2);
-    };
-
-    const out_file = try std.Io.Dir.cwd().createFile(io, output, .{});
-    defer out_file.close(io);
-
-    var out_buf: [4096]u8 = undefined;
-    var out_writer = out_file.writer(io, &out_buf);
+    const ofile = try std.Io.Dir.cwd().createFile(io, ofile_name, .{});
+    defer ofile.close(io);
+    var owriter = ofile.writer(io, &writer_buf);
+    const writer = &owriter.interface;
 
     // Flac File Writer
-    // var flac_enc: flac.Encoder = .{ .writer = &out_writer.interface };
-    // try flac_enc.initSamples(gpa, streaminfo.bit_depth, option.frame_size);
-    var flac_enc: flac.Encoder = try .init(
-        gpa,
-        &out_writer.interface,
-        .default(streaminfo.channels, streaminfo.bit_depth),
-    );
-    defer flac_enc.deinit(gpa);
+    var flac_enc: flac.Encoder = undefined;
+    flac_enc.init(gpa, format.bit_depth, format.channels, format.sample_rate, .{}) catch unreachable;
+    defer flac_enc.deinit();
+    // Buffer reading WAV PCM
+    const wav_data_buf = try gpa.alloc(u8, READ_SAMPLES * format.channels * format.bytes_per_sample);
+    defer gpa.free(wav_data_buf);
 
-    // Skip Signature and Streaminfo
-    try flac_enc.skipHeader();
-
-    try flac_enc.writeVorbisComment(true);
-
-    // Start Encoding flac
-    try switch (streaminfo.bit_depth) {
-        4...32 => encode(gpa, &streaminfo, wav, &flac_enc),
-        else => unreachable,
+    flac_enc.encodeStart(writer, &seekFn, &owriter) catch |err| return switch (err) {
+        error.WrongState => @panic("wrong encoder state at encodeStart()"),
+        else => |e| e,
     };
-
-    // Always flush BufferedWriter after writing
-    try out_writer.interface.flush();
-    // Seek back and write Signature and Streaminfo
-    flac_enc.finalizeStreamInfoMd5(&streaminfo);
-    try out_writer.seekTo(0);
-    try flac_enc.writeHeader(streaminfo, false);
-    try out_writer.interface.flush();
+    encode(reader, wav_data_buf, &flac_enc, format) catch |err| return switch (err) {
+        Reader.Error.EndOfStream => CodecError.IncompleteStream,
+        error.WrongState => @panic("wrong encoder state at processWav()"),
+        else => |e| e,
+    };
+    flac_enc.encodeFinish() catch |err| return switch (err) {
+        error.WrongState => @panic("wrong encoder state at encodeFinish()"),
+        else => |e| e,
+    };
 }
 
 /// Encoding frames and samples
 fn encode(
-    gpa: std.mem.Allocator,
-    streaminfo: *flac.metadata.StreamInfo,
-    wav: WavReader,
+    reader: *Reader,
+    wav_data_buf: []u8,
     flac_enc: *flac.Encoder,
+    audio_format: WavFmt,
 ) !void {
-    const frame_size = 4096;
+    const bytes_per_sample = audio_format.bytes_per_sample;
+    const channels = audio_format.channels;
+    const samples_cnt = audio_format.sample_cnt;
 
-    const sample_buf = try gpa.alloc(u8, frame_size * wav.channels * wav.bytes_per_sample);
-    defer gpa.free(sample_buf);
+    var remain_samples_count: usize = samples_cnt;
+    while (remain_samples_count > 0) {
+        const read_target: usize = @min(READ_SAMPLES, remain_samples_count);
+        remain_samples_count -= read_target;
 
-    var frame_idx: u36 = 0;
-    var remain_samples_count: usize = wav.samples_count;
-    while (remain_samples_count > 0) : (frame_idx += 1) {
-        const read_count = @min(frame_size, remain_samples_count);
-        const samples_read = try wav.fillSamples(sample_buf, read_count, flac_enc.samples, &flac_enc.md5);
-        if (samples_read == 0) break;
-        remain_samples_count -= samples_read;
+        const read_slice = wav_data_buf[0..read_target * channels * bytes_per_sample];
+        try reader.readSliceAll(read_slice);
 
-        const bytes_written =
-            try flac_enc.writeFrame(
-                frame_idx,
-                .{
-                    .bit_depth = streaminfo.bit_depth,
-                    .channels = streaminfo.channels,
-                    .samples_count = @intCast(samples_read),
-                    .sample_rate = streaminfo.sample_rate,
-                },
-            );
-
-        // Update min/max framesize in streaminfo
-        streaminfo.updateFrameSize(bytes_written);
+        flac_enc.processWav(read_slice, bytes_per_sample) catch |err| return switch (err) {
+            error.InvalidBuffer => unreachable,
+            else => |e| e,
+        };
     }
+}
+
+fn seekFn(_: *flac.Encoder, offset: u64, ctx: *anyopaque) flac.Encoder.SeekResult {
+    const file_writer: *File.Writer = @alignCast(@ptrCast(ctx));
+
+    file_writer.seekTo(offset) catch |err| return switch (err) {
+        error.Unseekable => flac.Encoder.SeekResult.unsupported,
+        else => flac.Encoder.SeekResult.err,
+    };
+    return .ok;
+}
+
+pub const CodecError = error{
+    NotRiffFile,
+    NotWaveFile,
+    IncompleteStream,
+    /// First subchunk is not `"fmt "`
+    InvalidSubchunkHeader,
+    /// Data Length cannot divide by `channels * bytes_per_sample`
+    InvalidDataLen,
+    /// Non PCM format
+    UnsupportCodec,
+    /// 0 or >32 bits
+    UnsupportBitDepth,
+    UnsupportFormat,
+    /// Either not aligned or missing
+    DataNotFound,
+    /// Unmatch to `sample_rate * channels * bit_depth / 8`
+    BitRateUnmatch,
+};
+
+const WavFmt = struct {
+    sample_cnt: u32 = undefined,
+    sample_rate: u32 = undefined,
+    bit_depth: u16 = undefined,
+    channels: u16 = undefined,
+    bytes_per_sample: u8 = undefined,
+};
+
+/// Read WAV file header and place reader at start of WAV stream \
+/// Assume file pointer is at the start of the file \
+/// \
+/// return: \
+/// - `EofError` while reading file (possibly)
+fn getWavFmt(reader: *Reader) (Reader.Error || CodecError)!WavFmt {
+    var wav_fmt: WavFmt = .{};
+    // Format header
+    if (!std.mem.eql(u8, try reader.takeArray(4), "RIFF"))
+        return CodecError.NotRiffFile;
+    try reader.discardAll(4); //Chunk Size
+    if (!std.mem.eql(u8, try reader.takeArray(4), "WAVE"))
+        return CodecError.NotWaveFile;
+    // Format info
+    while (!std.mem.eql(u8, try reader.take(4), "fmt ")) {
+        const bytes = try reader.takeInt(u32, .little);
+        try reader.discardAll(bytes);
+    }
+    try reader.discardAll(4); // fmt size
+    const Codec = enum(u16) { PCM = 1, PCM_EXTEND = 0xfffe };
+    const codec: Codec = switch (try reader.takeInt(u16, .little)) {
+        1, 0xfffe => |c| @enumFromInt(c),
+        else => return CodecError.UnsupportCodec,
+    };
+    // Data spec
+    wav_fmt.channels = try reader.takeInt(u16, .little);
+    wav_fmt.sample_rate = try reader.takeInt(u32, .little);
+    const byte_rate: u32 = try reader.takeInt(u32, .little);
+    const block_align = try reader.takeInt(u16, .little);
+    wav_fmt.bit_depth = switch (try reader.takeInt(u16, .little)) {
+        4...32 => |d| d,
+        else => return CodecError.UnsupportBitDepth,
+    };
+    wav_fmt.bytes_per_sample = @intCast(@divExact(block_align, wav_fmt.channels));
+    if (byte_rate != wav_fmt.sample_rate * wav_fmt.channels * wav_fmt.bytes_per_sample)
+        return CodecError.BitRateUnmatch;
+    if (codec == .PCM_EXTEND) {
+        // Extension block size(2)
+        try reader.discardAll(2);
+        // Valid Bits per Sample(2)
+        wav_fmt.bit_depth = try reader.takeInt(u16, .little);
+        // Channel Mask(4)
+        // Subformat(16)
+        try reader.discardAll(4 + 16);
+    }
+    // Skip unknown subchunks until "data"
+    // 4 bytes tag always follow u32le length of subchunk
+    while (!std.mem.eql(
+        u8,
+        reader.takeArray(4) catch return CodecError.DataNotFound,
+        "data",
+    )) {
+        try reader.discardAll(try reader.takeInt(u32, .little));
+    }
+
+    const data_len: u32 = try reader.takeInt(u32, .little);
+    if (data_len % block_align != 0)
+        return CodecError.InvalidDataLen;
+
+    wav_fmt.sample_cnt = data_len / (wav_fmt.channels * (wav_fmt.bit_depth / 8));
+
+    return wav_fmt;
 }

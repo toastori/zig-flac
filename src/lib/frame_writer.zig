@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const flac_type = @import("type.zig");
-const metadata = @import("metadata.zig");
 const rice = @import("rice.zig");
 const Channel = flac_type.Channel;
 const Crc8 = std.hash.crc.Crc8Smbus;

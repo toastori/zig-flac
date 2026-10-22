@@ -140,13 +140,17 @@ fn calcParamEstimate(
     };
 
     calcSums(residuals, sums, maxs, order_max, pred_order);
+    // Theoratically for x = bits use for max(samples) = max[0][0]
+    // param = x - 1 will always produce framesize >= all escape partition
+    // all possible size optimization further than all escape partition requires param <= x - 2
+    const param_max_opt: u5 = @intCast(@min(param_max, maxs[0][0] - 2));
 
     return selectBestConfig(
         sums,
         maxs,
         cfg_params,
         order_max,
-        param_max,
+        param_max_opt,
         pred_order,
         @intCast(residuals.len),
     );
@@ -175,9 +179,8 @@ fn calcSums(
         sum.* = 0;
         max.* = 0;
         for (res[pred_order..part_size]) |r| {
-            const zigzag = calcZigzag(r);
             sum.* += @abs(r);
-            max.* |= zigzag;
+            max.* |= calcZigzag(r);
         }
         max.* = if (max.* == 0) 0 else (@bitSizeOf(@TypeOf(max.*)) - @clz(max.*));
     }
@@ -189,9 +192,8 @@ fn calcSums(
         sum.* = 0;
         max.* = 0;
         for (res[part * part_size ..][0..part_size]) |r| {
-            const zigzag = calcZigzag(r);
             sum.* += @abs(r);
-            max.* |= zigzag;
+            max.* |= calcZigzag(r);
         }
         max.* = if (max.* == 0) 0 else (@bitSizeOf(@TypeOf(max.*)) - @clz(max.*));
     }
